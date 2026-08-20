@@ -8,6 +8,10 @@ import {
 import { selectWithStrategy } from "../autoCombo/routerStrategy.ts";
 import { buildComplexityRoutingHint } from "../autoCombo/complexityRouter";
 import { getModePack } from "../autoCombo/modePacks.ts";
+import {
+  orderTaskAwareCandidates,
+  type TaskAwareOrdering,
+} from "../autoCombo/taskAwareAutoOrdering.ts";
 import { recordComboIntent } from "../comboMetrics.ts";
 import { estimateTokens } from "../contextManager.ts";
 import { classifyWithConfig } from "../intentClassifier.ts";
@@ -343,6 +347,25 @@ export async function resolveAutoStrategyOrder(
       }
     }
 
+    const taskAwareRequest = {
+      prompt,
+      taskType,
+      requestHasTools,
+      estimatedInputTokens,
+      localOnly: taskType === "private" || taskType === "local",
+    };
+    const taskAwareOrdering: TaskAwareOrdering = orderTaskAwareCandidates(
+      taskAwareRequest,
+      routableCandidates
+    );
+    const taskAwareCandidates = taskAwareOrdering.candidates;
+
+    if (taskAwareCandidates.length > 0) {
+      log.debug?.(
+        "COMBO",
+        `Task-aware ordering: ${taskAwareOrdering.taskClass} | ${taskAwareOrdering.selectionReason}`
+      );
+    }
     if (!selectedProvider || !selectedModel) {
       let selection;
       try {
@@ -358,13 +381,10 @@ export async function resolveAutoStrategyOrder(
             budgetFallback,
             explorationRate,
           },
-          routableCandidates,
+          taskAwareCandidates,
           taskType
         );
       } catch (err) {
-        // #3470: `budgetFallback: "strict"` refuses to select when every candidate
-        // exceeds `budgetCap` — surface a clear cost-exceeds-budget response
-        // instead of letting it propagate as an unhandled 500.
         if (err instanceof BudgetExceededError) {
           return { earlyResponse: errorResponse(402, err.message) };
         }
@@ -373,7 +393,7 @@ export async function resolveAutoStrategyOrder(
       selectedProvider = selection.provider;
       selectedModel = selection.model;
       selectedConnectionId = selection.connectionId ?? null;
-      selectionReason = `score=${selection.score.toFixed(3)}${selection.isExploration ? " (exploration)" : ""}`;
+      selectionReason = `score=${selection.score.toFixed(3)}${selection.isExploration ? " (exploration)" : ""}; ${taskAwareOrdering.selectionReason}`;
     }
 
     // Complexity-aware routing (2026, opt-in): classify the request's
@@ -390,7 +410,7 @@ export async function resolveAutoStrategyOrder(
 
     const scoredTargets = scoreAutoTargets(
       eligibleTargets,
-      routableCandidates,
+      taskAwareCandidates,
       taskType,
       weights,
       autoManifestHint
