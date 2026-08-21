@@ -36,6 +36,7 @@ interface ComboMetricsEntry {
   intentCounts: Record<string, number>;
   byModel: Record<string, ModelMetrics>;
   byTarget: Record<string, ComboTargetMetrics>;
+  telemetry: ComboRequestTelemetry;
 }
 
 interface ComboShadowMetricsEntry {
@@ -84,6 +85,15 @@ export interface ComboRequestTargetMeta {
   label?: string | null;
 }
 
+export interface ComboRequestTelemetry {
+  taskClass?: string | null;
+  selectionReason?: string | null;
+  taskAwareAdjustment?: number | null;
+  localOrCloud?: "local" | "cloud" | null;
+  freeOrPaid?: "free" | "paid" | null;
+  governorDecision?: string | boolean | null;
+  failureClass?: "429" | "5xx" | "other" | "none" | null;
+}
 function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -118,6 +128,7 @@ function createComboEntry(strategy: string): ComboMetricsEntry {
     intentCounts: {},
     byModel: {},
     byTarget: {},
+    telemetry: {},
   };
 }
 
@@ -250,12 +261,14 @@ export function recordComboRequest(
     fallbackCount = 0,
     strategy = "priority",
     target,
+    telemetry = {},
   }: {
     success: boolean;
     latencyMs: number;
     fallbackCount?: number;
     strategy?: string;
     target?: ComboRequestTargetMeta | null;
+    telemetry?: ComboRequestTelemetry;
   }
 ): void {
   if (!metrics.has(comboName) && metrics.size >= MAX_METRICS_ENTRIES) {
@@ -274,6 +287,7 @@ export function recordComboRequest(
   combo.totalFallbacks += fallbackCount;
   combo.lastUsedAt = usedAt;
   combo.strategy = strategy;
+  combo.telemetry = { ...combo.telemetry, ...telemetry };
 
   if (success) {
     combo.totalSuccesses++;
@@ -412,6 +426,7 @@ export function getComboMetrics(comboName: string): ComboMetricsView | null {
 
   return {
     ...combo,
+    telemetry: combo.telemetry,
     productionTraffic: !!productionCombo && productionCombo.totalRequests > 0,
     avgLatencyMs:
       combo.totalRequests > 0 ? Math.round(combo.totalLatencyMs / combo.totalRequests) : 0,
