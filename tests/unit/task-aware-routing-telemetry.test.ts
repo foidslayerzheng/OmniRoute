@@ -9,16 +9,19 @@ test("combo telemetry preserves existing metrics and records task-aware fields",
     success: true,
     latencyMs: 123,
     fallbackCount: 2,
-    target: { executionKey: "lightning", provider: "nvidia" },
-    telemetry: {
-      taskClass: "coding",
-      selectionReason: "preferred-free-model",
-      taskAwareAdjustment: 0.25,
-      localOrCloud: "cloud",
-      freeOrPaid: "free",
-      governorDecision: governor.admitted,
-      failureClass: "none",
+    target: {
+      executionKey: "lightning",
+      provider: "nvidia",
+      taskAwareTelemetry: {
+        taskClass: "coding",
+        selectionReason: "preferred-free-model",
+        taskAwareAdjustment: 0.25,
+        localOrCloud: "cloud",
+        freeOrPaid: "free",
+        governorDecision: true,
+      },
     },
+    telemetry: { failureClass: "none" },
   });
   recordComboRequest("telemetry-test", "openai/gpt-4", {
     success: false,

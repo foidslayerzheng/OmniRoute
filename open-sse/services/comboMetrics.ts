@@ -83,6 +83,7 @@ export interface ComboRequestTargetMeta {
   providerId?: string | null;
   connectionId?: string | null;
   label?: string | null;
+  taskAwareTelemetry?: ComboRequestTelemetry;
 }
 
 export interface ComboRequestTelemetry {
@@ -287,7 +288,7 @@ export function recordComboRequest(
   combo.totalFallbacks += fallbackCount;
   combo.lastUsedAt = usedAt;
   combo.strategy = strategy;
-  combo.telemetry = { ...combo.telemetry, ...telemetry };
+  combo.telemetry = { ...combo.telemetry, ...target?.taskAwareTelemetry, ...telemetry };
 
   if (success) {
     combo.totalSuccesses++;
