@@ -5,6 +5,11 @@
  */
 
 import { recordProviderUsage } from "./autoCombo/providerDiversity";
+import {
+  runtimeRoutingTuner,
+  TASK_CLASSES,
+  type TaskClass,
+} from "./autoCombo/taskAwareRoutingPolicy.ts";
 
 interface ModelMetrics {
   requests: number;
@@ -289,6 +294,22 @@ export function recordComboRequest(
   combo.lastUsedAt = usedAt;
   combo.strategy = strategy;
   combo.telemetry = { ...combo.telemetry, ...target?.taskAwareTelemetry, ...telemetry };
+
+  const taskAwareTelemetry = { ...target?.taskAwareTelemetry, ...telemetry };
+  if (
+    modelStr &&
+    taskAwareTelemetry.taskClass &&
+    TASK_CLASSES.includes(taskAwareTelemetry.taskClass as TaskClass) &&
+    taskAwareTelemetry.freeOrPaid !== "paid"
+  ) {
+    runtimeRoutingTuner.recordOutcome({
+      taskClass: taskAwareTelemetry.taskClass as TaskClass,
+      model: modelStr,
+      success,
+      latencyMs,
+      status: taskAwareTelemetry.failureClass === "429" ? 429 : undefined,
+    });
+  }
 
   if (success) {
     combo.totalSuccesses++;

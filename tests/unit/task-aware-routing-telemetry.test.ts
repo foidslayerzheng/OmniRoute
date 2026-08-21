@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { getComboMetrics, recordComboRequest, resetAllComboMetrics } from "../../open-sse/services/comboMetrics.ts";
+import { runtimeRoutingTuner } from "../../open-sse/services/autoCombo/taskAwareRoutingPolicy.ts";
 
 test("combo telemetry preserves existing metrics and records task-aware fields", () => {
   resetAllComboMetrics();
@@ -48,4 +49,26 @@ test("combo telemetry preserves existing metrics and records task-aware fields",
     failureClass: "429",
   });
   assert.equal(governor.admitted, true);
+});
+
+test("task-aware free successes feed the bounded runtime tuner", () => {
+  resetAllComboMetrics();
+  runtimeRoutingTuner.rollback();
+  for (let index = 0; index < 20; index += 1) {
+    recordComboRequest("telemetry-tuner", "nvidia/nemotron-3.5-lightning:free", {
+      success: true,
+      latencyMs: 100,
+      target: {
+        executionKey: "lightning",
+        taskAwareTelemetry: { taskClass: "coding", freeOrPaid: "free" },
+      },
+    });
+  }
+  assert.ok(
+    runtimeRoutingTuner.getPreferenceAdjustment(
+      "coding",
+      "nvidia/nemotron-3.5-lightning:free"
+    ) > 0
+  );
+  runtimeRoutingTuner.rollback();
 });
