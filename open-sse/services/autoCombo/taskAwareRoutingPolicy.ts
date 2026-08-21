@@ -75,16 +75,54 @@ export function classifyFailure(status?: number): FailureClass { if (!status) re
 export interface TunerWeights { quality: number; reliability: number; latency: number; }
 export const DEFAULT_TUNER_WEIGHTS: Readonly<TunerWeights> = { quality: 0.55, reliability: 0.35, latency: 0.10 };
 const BOUNDS = { quality: [0.35, 0.75], reliability: [0.2, 0.6], latency: [0.05, 0.25] } as const;
+const MIN_TUNER_SAMPLES = 20;
+const MAX_PREFERENCE_ADJUSTMENT = 0.03;
+const OUTCOME_DECAY_MS = 7 * 24 * 60 * 60 * 1000;
+
+type TunerOutcome = Pick<TelemetryEvent, "taskClass" | "model" | "success" | "latencyMs" | "status"> & {
+  recordedAt?: number;
+};
+
 export class BoundedRoutingTuner {
   private weights: TunerWeights = { ...DEFAULT_TUNER_WEIGHTS };
-  private samples = 0; private enabled = true;
+  private samples = 0;
+  private enabled = true;
+  private readonly outcomes = new Map<string, TunerOutcome[]>();
+
   adjust(observed: Partial<TunerWeights>, sampleCount: number, reason: string) {
-    if (!this.enabled || sampleCount < 20) return { changed: false, reason: "insufficient-sample-or-disabled", weights: { ...this.weights } };
+    if (!this.enabled || sampleCount < MIN_TUNER_SAMPLES) return { changed: false, reason: "insufficient-sample-or-disabled", weights: { ...this.weights } };
     const next = { ...this.weights };
     for (const key of ["quality", "reliability", "latency"] as const) { const value = observed[key]; if (typeof value === "number" && Number.isFinite(value)) next[key] = Math.min(BOUNDS[key][1], Math.max(BOUNDS[key][0], value)); }
     this.weights = next; this.samples += sampleCount;
     return { changed: true, reason, weights: { ...this.weights } };
   }
-  disable() { this.enabled = false; } enable() { this.enabled = true; } rollback() { this.weights = { ...DEFAULT_TUNER_WEIGHTS }; }
+
+  recordOutcome(outcome: TunerOutcome): void {
+    if (!this.enabled || classifyFailure(outcome.status) === "429") return;
+    const key = `${outcome.taskClass}\u0000${outcome.model}`;
+    const recordedAt = outcome.recordedAt ?? Date.now();
+    const retained = (this.outcomes.get(key) ?? []).filter((entry) => recordedAt - (entry.recordedAt ?? recordedAt) <= OUTCOME_DECAY_MS);
+    retained.push({ ...outcome, recordedAt });
+    this.outcomes.set(key, retained);
+    this.samples += 1;
+  }
+
+  getPreferenceAdjustment(taskClass: TaskClass, model: string, now = Date.now()): number {
+    if (!this.enabled) return 0;
+    const outcomes = (this.outcomes.get(`${taskClass}\u0000${model}`) ?? []).filter(
+      (entry) => now - (entry.recordedAt ?? now) <= OUTCOME_DECAY_MS
+    );
+    if (outcomes.length < MIN_TUNER_SAMPLES) return 0;
+    const successRate = outcomes.filter((entry) => entry.success).length / outcomes.length;
+    const avgLatencyMs = outcomes.reduce((total, entry) => total + entry.latencyMs, 0) / outcomes.length;
+    const reliabilitySignal = Math.max(0, successRate - 0.5) * 2;
+    const latencySignal = Math.max(0, 1 - Math.min(avgLatencyMs, 10_000) / 10_000);
+    return Number((MAX_PREFERENCE_ADJUSTMENT * (reliabilitySignal * 0.8 + latencySignal * 0.2)).toFixed(4));
+  }
+
+  disable() { this.enabled = false; } enable() { this.enabled = true; }
+  rollback() { this.weights = { ...DEFAULT_TUNER_WEIGHTS }; this.outcomes.clear(); this.samples = 0; }
   getState() { return { enabled: this.enabled, samples: this.samples, weights: { ...this.weights } }; }
 }
+
+export const runtimeRoutingTuner = new BoundedRoutingTuner();

@@ -33,3 +33,18 @@ test("failure categories and bounded tuner", () => {
   t.rollback(); assert.deepEqual(t.getState().weights, DEFAULT_TUNER_WEIGHTS); t.disable();
   assert.equal(t.adjust({ quality: .7 }, 100, "disabled").changed, false);
 });
+
+test("runtime tuner changes only a free preference after 20 non-transient observations", () => {
+  const t = new BoundedRoutingTuner();
+  for (let index = 0; index < 20; index++) {
+    t.recordOutcome({ taskClass: "coding", model: "free-model", success: true, latencyMs: 10 });
+  }
+  assert.ok(t.getPreferenceAdjustment("coding", "free-model") > 0);
+  t.recordOutcome({ taskClass: "coding", model: "free-model", success: false, latencyMs: 10, status: 429 });
+  assert.ok(t.getPreferenceAdjustment("coding", "free-model") > 0);
+  t.disable();
+  assert.equal(t.getPreferenceAdjustment("coding", "free-model"), 0);
+  t.enable();
+  t.rollback();
+  assert.equal(t.getPreferenceAdjustment("coding", "free-model"), 0);
+});

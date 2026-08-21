@@ -2,6 +2,8 @@ import type { AutoProviderCandidate } from "../combo/types.ts";
 import {
   classifyTask,
   preferredModels,
+  runtimeRoutingTuner,
+  type BoundedRoutingTuner,
   type RoutingRequest,
   type TaskClass,
 } from "./taskAwareRoutingPolicy.ts";
@@ -29,7 +31,8 @@ function isLocal(candidate: AutoProviderCandidate): boolean {
  */
 export function orderTaskAwareCandidates(
   request: RoutingRequest,
-  candidates: AutoProviderCandidate[]
+  candidates: AutoProviderCandidate[],
+  tuner: Pick<BoundedRoutingTuner, "getPreferenceAdjustment"> = runtimeRoutingTuner
 ): TaskAwareOrdering {
   const taskClass = classifyTask(request);
   const preferred = preferredModels(taskClass);
@@ -37,13 +40,17 @@ export function orderTaskAwareCandidates(
   const adjustments = new Map<string, number>();
   for (const candidate of eligible) {
     const preferredIndex = preferred.indexOf(modelKey(candidate));
-    const adjustment =
+    const staticAdjustment =
       candidate.modelStr.endsWith(":free") || isLocal(candidate)
         ? preferredIndex < 0
           ? 0
           : Math.max(0.01, 0.12 - preferredIndex * 0.03)
         : 0;
-    adjustments.set(candidate.executionKey, adjustment);
+    const learnedAdjustment =
+      candidate.modelStr.endsWith(":free") || isLocal(candidate)
+        ? tuner.getPreferenceAdjustment(taskClass, modelKey(candidate))
+        : 0;
+    adjustments.set(candidate.executionKey, staticAdjustment + learnedAdjustment);
   }
   const ordered = [...eligible].sort((left, right) => {
     const adjustmentDelta =

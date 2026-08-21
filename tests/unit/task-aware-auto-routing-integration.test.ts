@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { orderTaskAwareCandidates } from "../../open-sse/services/autoCombo/taskAwareAutoOrdering.ts";
+import { runtimeRoutingTuner } from "../../open-sse/services/autoCombo/taskAwareRoutingPolicy.ts";
 
 const LIGHTNING = "nvidia/nemotron-3.5-lightning:free";
 const ULTRA = "nvidia/nemotron-3-ultra-550b-a55b:free";
@@ -40,4 +41,21 @@ test("task-aware ordering does not mutate Governor state", () => {
   const before = JSON.stringify(governor);
   order("reason about this", [candidate(ULTRA), candidate(LIGHTNING)], { governorAdmitted: true });
   assert.equal(JSON.stringify(governor), before);
+});
+
+test("runtime tuner adds only its bounded learned preference after enough successful observations", () => {
+  const tuner = new (runtimeRoutingTuner.constructor as new () => typeof runtimeRoutingTuner)();
+  for (let index = 0; index < 20; index += 1) {
+    tuner.recordOutcome({ taskClass: "coding", model: OSS, success: true, latencyMs: 100 });
+  }
+  const baseline = order("implement this", [candidate(LIGHTNING), candidate(OSS)]);
+  const result = orderTaskAwareCandidates(
+    { prompt: "implement this" },
+    [candidate(LIGHTNING), candidate(OSS)],
+    tuner
+  );
+  assert.equal(result.candidates[0].modelStr, LIGHTNING);
+  const learnedDelta = (result.adjustments.get(OSS) ?? 0) - (baseline.adjustments.get(OSS) ?? 0);
+  assert.ok(learnedDelta > 0);
+  assert.ok(learnedDelta <= 0.03);
 });
