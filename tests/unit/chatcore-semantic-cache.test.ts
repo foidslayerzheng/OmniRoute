@@ -149,7 +149,12 @@ function makeHitArgs(overrides: Record<string, unknown> = {}) {
   const args = {
     semanticCacheEnabled: true,
     body: { model: "gpt-4o", messages: [{ role: "user", content: "cached query" }], temperature: 0 },
-    clientRawRequest: { headers: {} },
+    clientRawRequest: {
+      headers: {
+        "x-omniroute-cache-safe": "true",
+        "x-omniroute-no-memory": "true",
+      },
+    },
     model: "gpt-4o",
     provider: "openai",
     stream: false,
