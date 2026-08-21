@@ -39,12 +39,12 @@ was invoked.
 
 | Task class | Model | Transport result | Validity / interpretation |
 | --- | --- | --- | --- |
-| simple | nvidia/nemotron-3.5-lightning:free | HTTP 200, 3,649 ms, 164 total tokens | INVALID: emitted internal analysis instead of exactly `17`. |
-| coding | poolside/laguna-s-2.1:free | HTTP 502, 9,056 ms, empty output | BLOCKED: upstream empty response; availability failure, not a quality score. |
-| reasoning | nvidia/nemotron-3.5-lightning:free | HTTP 200, 3,120 ms, 323 total tokens | INVALID: math was correct but output exhausted before required final line. |
-| long-context | nvidia/nemotron-3-ultra-550b-a55b:free | HTTP 200, 14,932 ms, 456 total tokens | INVALID: identified the record facts but exhausted output before the requested two bullets. |
-| agent/tool proposal | nvidia/nemotron-3-ultra-550b-a55b:free | HTTP 200, 9,881 ms, 236 total tokens | PASS: returned four lines, named read-only `read_file` before edits, and ended `DEPLOY: NO`. |
-| multi-step | nvidia/nemotron-3-ultra-550b-a55b:free | HTTP 200, 6,049 ms, 324 total tokens | INVALID: correctly classified HTTP 429 as transient and non-training, but exhausted output before the exact three-step completion. |
+| simple | nvidia/nemotron-3.5-lightning:free | HTTP 200, 3,589 ms, 164 total tokens | INVALID: emitted internal analysis instead of exactly `17`. |
+| coding | poolside/laguna-s-2.1:free | HTTP 502, 9,022 ms, 358 total tokens | BLOCKED: upstream failure; availability failure, not a quality score. |
+| reasoning | nvidia/nemotron-3.5-lightning:free | HTTP 200, 3,078 ms, 323 total tokens | INVALID: math was correct but output exhausted before required final line. |
+| long-context | nvidia/nemotron-3-ultra-550b-a55b:free | HTTP 200, 14,892 ms, 456 total tokens | INVALID: identified the record facts but exhausted output before the requested two bullets. |
+| agent/tool proposal | nvidia/nemotron-3-ultra-550b-a55b:free | HTTP 200, 9,816 ms, 236 total tokens | PASS: returned four lines, named read-only `read_file` before edits, and ended `DEPLOY: NO`. |
+| multi-step | nvidia/nemotron-3-ultra-550b-a55b:free | HTTP 200, 6,012 ms, 324 total tokens | INVALID: correctly classified HTTP 429 as transient and non-training, but exhausted output before the exact three-step completion. |
 
 This is a bounded evaluation, not a routing-ranking update. Invalid wrapper/
 internal-analysis outputs and upstream availability failures must not be used to
