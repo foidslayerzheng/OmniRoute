@@ -330,6 +330,7 @@ export function toRecordedTarget(target: ResolvedComboTarget) {
     providerId: target.providerId,
     connectionId: target.connectionId,
     label: target.label,
+    taskAwareTelemetry: target.taskAwareTelemetry,
   };
 }
 

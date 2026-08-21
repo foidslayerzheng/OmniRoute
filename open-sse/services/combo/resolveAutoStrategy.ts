@@ -441,10 +441,20 @@ export async function resolveAutoStrategyOrder(
     // routable ranked ones (and, when the cutoff is OFF, makes this identical to
     // the pre-cutoff behavior), but a quota-blocked target still survives as a
     // final fallback instead of vanishing — the hard cutoff only de-prioritizes.
+    const taskAwareTelemetryForTarget = (target: ResolvedComboTarget) => ({
+      taskClass: taskAwareOrdering.taskClass,
+      selectionReason: taskAwareOrdering.selectionReason,
+      taskAwareAdjustment: taskAwareOrdering.adjustments.get(target.executionKey) ?? 0,
+      localOrCloud: target.modelStr === "local-qwen" || target.provider === "local-qwen" ? "local" : "cloud",
+      freeOrPaid: target.modelStr.endsWith(":free") || target.modelStr === "local-qwen" ? "free" : "paid",
+    });
     orderedTargets = dedupeTargetsByExecutionKey(
-      [selectedTarget, ...rankedTargets, ...eligibleTargets].filter(
-        (entry): entry is ResolvedComboTarget => entry !== undefined && entry !== null
-      )
+      [selectedTarget, ...rankedTargets, ...eligibleTargets]
+        .filter((entry): entry is ResolvedComboTarget => entry !== undefined && entry !== null)
+        .map((target) => ({
+          ...target,
+          taskAwareTelemetry: taskAwareTelemetryForTarget(target),
+        }))
     );
 
     log.info(

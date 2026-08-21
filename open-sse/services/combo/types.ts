@@ -7,6 +7,7 @@
  */
 
 import type { ProviderCandidate } from "../autoCombo/scoring.ts";
+import type { ComboRequestTelemetry } from "../comboMetrics.ts";
 
 export const RESET_WINDOW_NAMES = ["weekly", "session", "monthly"] as const;
 
@@ -167,6 +168,7 @@ export type ResolvedComboTarget = {
   allowedConnectionIds?: string[] | null;
   weight: number;
   label: string | null;
+  taskAwareTelemetry?: ComboRequestTelemetry;
   failoverBeforeRetry?: unknown;
   trafficType?: "production" | "shadow";
   /**

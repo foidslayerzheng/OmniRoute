@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { getComboMetrics, recordComboRequest, resetAllComboMetrics } from "../../open-sse/services/comboMetrics.ts";
 import { runtimeRoutingTuner } from "../../open-sse/services/autoCombo/taskAwareRoutingPolicy.ts";
+import { toRecordedTarget } from "../../open-sse/services/combo/comboPredicates.ts";
 
 test("combo telemetry preserves existing metrics and records task-aware fields", () => {
   resetAllComboMetrics();
@@ -71,4 +72,33 @@ test("task-aware free successes feed the bounded runtime tuner", () => {
     ) > 0
   );
   runtimeRoutingTuner.rollback();
+});
+
+test("recorded targets carry task-aware telemetry into runtime metrics", () => {
+  const target = toRecordedTarget({
+    kind: "model",
+    stepId: "coding",
+    executionKey: "lightning",
+    modelStr: "nvidia/nemotron-3.5-lightning:free",
+    provider: "nvidia",
+    providerId: null,
+    connectionId: null,
+    weight: 1,
+    label: null,
+    taskAwareTelemetry: {
+      taskClass: "coding",
+      selectionReason: "task-aware bounded preference: coding; paid candidates not promoted",
+      taskAwareAdjustment: 0.12,
+      localOrCloud: "cloud",
+      freeOrPaid: "free",
+    },
+  });
+
+  assert.deepEqual(target.taskAwareTelemetry, {
+    taskClass: "coding",
+    selectionReason: "task-aware bounded preference: coding; paid candidates not promoted",
+    taskAwareAdjustment: 0.12,
+    localOrCloud: "cloud",
+    freeOrPaid: "free",
+  });
 });
