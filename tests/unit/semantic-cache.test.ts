@@ -135,6 +135,35 @@ describe("Semantic Cache", () => {
       const headers = new Headers({});
       assert.equal(isCacheableForRead({ temperature: 0 }, headers), true);
     });
+
+    it("requires explicit safe-cache and memory opt-out headers for deterministic static requests", () => {
+      const safeHeaders = new Headers({
+        "x-omniroute-cache-safe": "true",
+        "x-omniroute-no-memory": "true",
+      });
+      const safeBody = {
+        model: "local-qwen",
+        messages: [{ role: "user", content: "Summarize this static text." }],
+        temperature: 0,
+      };
+
+      assert.equal(isCacheableForRead(safeBody, safeHeaders), true);
+      assert.equal(isCacheableForRead(safeBody, new Headers()), false);
+      assert.equal(isCacheableForRead(safeBody, new Headers({ "x-omniroute-cache-safe": "true" })), false);
+      assert.equal(isCacheableForRead({ ...safeBody, tools: [] }, safeHeaders), false);
+      assert.equal(
+        isCacheableForRead(
+          { ...safeBody, messages: [{ role: "user", content: "What is the latest news today?" }] },
+          safeHeaders
+        ),
+        false
+      );
+      assert.equal(isCacheableForRead({ ...safeBody, max_tokens: 10 }, safeHeaders), false);
+      assert.equal(isCacheableForRead({ ...safeBody, top_p: 0.5 }, safeHeaders), false);
+      assert.equal(isCacheableForWrite(safeBody, safeHeaders), true);
+      assert.equal(isCacheableForWrite(safeBody, new Headers()), false);
+      assert.equal(isCacheableForWrite({ ...safeBody, tools: [] }, safeHeaders), false);
+    });
   });
 
   describe("isCacheableForWrite", () => {

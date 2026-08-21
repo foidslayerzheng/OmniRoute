@@ -89,7 +89,45 @@ function getHeaderValue(
   return null;
 }
 
-// ─── Singleton ─────────────────
+function hasExplicitSafeCacheOptIn(headers: unknown): boolean {
+  return (getHeaderValue(headers as Record<string, unknown>, "x-omniroute-cache-safe") || "").toLowerCase() === "true";
+}
+
+function hasNoMemoryOptOut(headers: unknown): boolean {
+  return (getHeaderValue(headers as Record<string, unknown>, "x-omniroute-no-memory") || "").toLowerCase() === "true";
+}
+
+function hasLiveStateRequest(body: Record<string, unknown>): boolean {
+  const conversation = body.messages ?? body.input;
+  const text = Array.isArray(conversation)
+    ? conversation
+        .map((item) => stringifyForSignature(asRecord(item).content))
+        .join(" ")
+        .toLowerCase()
+    : stringifyForSignature(conversation).toLowerCase();
+  return /\b(latest|current|today|now|news|weather|stock|price|score|status|live)\b/.test(text);
+}
+
+function isSafeDeterministicCacheRequest(body: Record<string, unknown>, headers: unknown): boolean {
+  if (!hasExplicitSafeCacheOptIn(headers) || !hasNoMemoryOptOut(headers)) return false;
+  if (hasLiveStateRequest(body)) return false;
+  if (body.tools !== undefined || body.tool_choice !== undefined || body.parallel_tool_calls !== undefined) {
+    return false;
+  }
+  if (
+    body.max_tokens !== undefined ||
+    body.max_completion_tokens !== undefined ||
+    body.response_format !== undefined ||
+    body.logprobs !== undefined ||
+    body.top_logprobs !== undefined ||
+    body.presence_penalty !== undefined ||
+    body.frequency_penalty !== undefined ||
+    body.seed !== undefined
+  ) {
+    return false;
+  }
+  return body.top_p === undefined || body.top_p === 1;
+}
 
 let memoryCache: LRUCache | null = null;
 
@@ -359,6 +397,9 @@ export function isCacheableForRead(body, headers) {
     return false;
   }
   if (typeof body.temperature !== "number" || body.temperature !== 0) return false;
+  if (body.messages !== undefined || body.input !== undefined) {
+    return isSafeDeterministicCacheRequest(body, headers);
+  }
   return true;
 }
 
@@ -373,5 +414,8 @@ export function isCacheableForWrite(body, headers) {
     return false;
   }
   if (body.temperature !== 0) return false;
+  if (body.messages !== undefined || body.input !== undefined) {
+    return isSafeDeterministicCacheRequest(body, headers);
+  }
   return true;
 }
