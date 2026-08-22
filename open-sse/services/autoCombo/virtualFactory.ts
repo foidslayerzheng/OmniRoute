@@ -443,7 +443,7 @@ export async function createVirtualAutoCombo(
   // (consistent with the opt-in intent). Default OFF → pool unchanged.
   const paidFilteredPool = filterPaidOnlyCandidates(
     candidatePool,
-    settings.hidePaidModels === true
+    settings.hidePaidModels === true || spec?.tier === "free"
   );
   if (paidFilteredPool !== candidatePool) {
     candidatePool.length = 0;
