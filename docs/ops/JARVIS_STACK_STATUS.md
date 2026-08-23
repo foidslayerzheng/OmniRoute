@@ -1,3 +1,7 @@
+---
+title: "JARVIS / Hermes no-spend completion status"
+---
+
 # JARVIS / Hermes no-spend completion status
 
 ## Scope and safety boundary
