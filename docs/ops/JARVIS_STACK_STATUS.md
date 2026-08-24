@@ -50,6 +50,19 @@ time; they must not be interpreted as the current production state.
   OmniRoute request.
 - Task-type/weight/result-quality telemetry is not yet rich enough for fully
   empirical routing decisions.
+
+### Empirical OmniRoute Aggregation v1
+
+Empirical OmniRoute Aggregation v1 provides a pure, read-only offline layer that
+aggregates deterministic evaluation evidence from existing persisted
+`eval_runs/results_json` records by model and canonical task class. Deterministic
+evaluation quality and runtime/transport reliability remain separate evidence
+channels; the in-memory runtime tuner is unchanged.
+
+`MIN_EMPIRICAL_EVAL_SAMPLES=5` is a shadow-only diagnostic readiness guard. No
+candidate ordering or other routing behavior has changed, and empirical routing
+is **not enabled**.
+
 - The currently exposed live OmniRoute model catalog does not expose the
   previously verified LM Studio local model; local-runtime wiring should be
   revisited in the next phase rather than reopening this closeout.
