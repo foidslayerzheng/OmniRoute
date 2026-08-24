@@ -72,6 +72,17 @@ closeout remediation:
 5. Use the stable core for zero-capital revenue-generating workflows and turn
    successful repeatable workflows into reusable JARVIS skills/businesses.
 
+## JARVIS evaluation baseline
+
+Universal Evaluation Record v1 exists at commit
+`d52a765486060450de237c51bf06b993f0d67dcc`. The built-in
+`jarvis-core-v1` suite now provides 24 deterministic, offline-testable cases
+covering simple/general, coding, reasoning, research/analysis, long-context,
+instruction-following, prompt-injection-resistance, deployment/safety-boundary,
+retry/failure-reasoning, and routing-awareness/tool-planning. It uses no LLM
+judge. No live benchmark execution has been performed yet, and the overall
+JARVIS Evaluation Suite is **NOT complete**.
+
 ## Historical constrained-evaluation scope and safety boundary
 
 This record covers the constrained JARVIS evaluation conducted against the

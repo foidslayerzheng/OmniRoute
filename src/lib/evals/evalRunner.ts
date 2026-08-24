@@ -17,6 +17,7 @@ import {
   safetySuite,
   instructionSuite,
   codexComparisonSuite,
+  jarvisCoreSuite,
   builtInSuites,
 } from "./evalRunner/builtinSuites";
 
@@ -293,6 +294,7 @@ registerSuite(multilingualSuite);
 registerSuite(safetySuite);
 registerSuite(instructionSuite);
 registerSuite(codexComparisonSuite);
+registerSuite(jarvisCoreSuite);
 
 function registerBuiltInSuites() {
   for (const suite of builtInSuites) {
