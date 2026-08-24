@@ -2,20 +2,47 @@ import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getEvalScorecard, listEvalRuns, getApiKeys } from "@/lib/localDb";
 import { listSuites, runSuite, createScorecard } from "@/lib/evals/evalRunner";
+import {
+  buildEmpiricalShadowScorecard,
+  MIN_EMPIRICAL_EVAL_SAMPLES,
+} from "@/lib/evals/empiricalAggregation";
 import { buildEvalTargetOptions, runEvalSuiteAgainstTarget } from "@/lib/evals/runtime";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { evalRunSuiteSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 
+interface EmpiricalScorecardPayload {
+  schemaVersion: 1;
+  shadowOnly: true;
+  minEmpiricalEvalSamples: number;
+  generatedFrom: "persisted_eval_runs";
+  groups: ReturnType<typeof buildEmpiricalShadowScorecard>[number]["evidence"][];
+  routingReadiness: ReturnType<typeof buildEmpiricalShadowScorecard>;
+}
+
+export function createEmpiricalDiagnosticsScorecard(
+  persistedRuns: Parameters<typeof buildEmpiricalShadowScorecard>[0]
+): EmpiricalScorecardPayload {
+  const routingReadiness = buildEmpiricalShadowScorecard(persistedRuns);
+  return {
+    schemaVersion: 1,
+    shadowOnly: true,
+    minEmpiricalEvalSamples: MIN_EMPIRICAL_EVAL_SAMPLES,
+    generatedFrom: "persisted_eval_runs",
+    groups: routingReadiness.map((entry) => entry.evidence),
+    routingReadiness,
+  };
+}
+
 export async function GET(request: Request) {
   const authError = await requireManagementAuth(request);
   if (authError) return authError;
 
   try {
-    const [suites, recentRuns, scorecard, targets, apiKeys] = await Promise.all([
+    const [suites, persistedRuns, scorecard, targets, apiKeys] = await Promise.all([
       Promise.resolve(listSuites()),
-      Promise.resolve(listEvalRuns({ limit: 20 })),
+      Promise.resolve(listEvalRuns({ limit: 1000 })),
       Promise.resolve(getEvalScorecard({ limit: 50 })),
       buildEvalTargetOptions(),
       getApiKeys(),
@@ -23,8 +50,9 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       suites,
-      recentRuns,
+      recentRuns: persistedRuns.slice(0, 20),
       scorecard,
+      empiricalScorecard: createEmpiricalDiagnosticsScorecard(persistedRuns),
       targets,
       apiKeys: apiKeys.map((key) => ({
         id: key.id,

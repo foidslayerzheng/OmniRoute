@@ -61,7 +61,11 @@ channels; the in-memory runtime tuner is unchanged.
 
 `MIN_EMPIRICAL_EVAL_SAMPLES=5` is a shadow-only diagnostic readiness guard. No
 candidate ordering or other routing behavior has changed, and empirical routing
-is **not enabled**.
+is **not enabled**. Aggregation v1 was introduced by commit `ebd2f5f2`; its
+read-only shadow scorecard is now exposed through the existing eval diagnostics
+API. Routing influence remains **OFF**, and no live benchmark dataset has yet
+been used to tune routing. The next gate is evidence collection and inspection
+before any separately authorized bounded routing influence.
 
 - The currently exposed live OmniRoute model catalog does not expose the
   previously verified LM Studio local model; local-runtime wiring should be
