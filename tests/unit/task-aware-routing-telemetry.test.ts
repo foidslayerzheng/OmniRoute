@@ -55,6 +55,7 @@ test("combo telemetry preserves existing metrics and records task-aware fields",
 test("task-aware free successes feed the bounded runtime tuner", () => {
   resetAllComboMetrics();
   runtimeRoutingTuner.rollback();
+  runtimeRoutingTuner.enable();
   for (let index = 0; index < 20; index += 1) {
     recordComboRequest("telemetry-tuner", "nvidia/nemotron-3.5-lightning:free", {
       success: true,

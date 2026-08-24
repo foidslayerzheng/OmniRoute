@@ -45,6 +45,7 @@ test("task-aware ordering does not mutate Governor state", () => {
 
 test("runtime tuner adds only its bounded learned preference after enough successful observations", () => {
   const tuner = new (runtimeRoutingTuner.constructor as new () => typeof runtimeRoutingTuner)();
+  tuner.enable();
   for (let index = 0; index < 20; index += 1) {
     tuner.recordOutcome({ taskClass: "coding", model: OSS, success: true, latencyMs: 100 });
   }
