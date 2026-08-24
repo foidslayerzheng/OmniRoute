@@ -210,17 +210,28 @@ export function evaluateCase(evalCase: any, actualOutput: string) {
  * @param {Record<string, { durationMs?: number, error?: string }>} [caseMetrics]
  * @returns {{ suiteId: string, suiteName: string, results: EvalResult[], summary: { total: number, passed: number, failed: number, passRate: number } }}
  */
+export function selectEvalCasesByTag(cases: EvalCase[], tag?: string): EvalCase[] {
+  if (tag === undefined) return cases;
+
+  const selected = cases.filter((evalCase) => evalCase.tags?.includes(tag) === true);
+  if (selected.length === 0) {
+    throw new Error(`No eval cases matched tag: ${tag}`);
+  }
+  return selected;
+}
+
 export function runSuite(
   suiteId: string,
   outputs: Record<string, string>,
-  caseMetrics: Record<string, { durationMs?: number; error?: string }> = {}
+  caseMetrics: Record<string, { durationMs?: number; error?: string }> = {},
+  tag?: string
 ) {
   const suite = getSuite(suiteId);
   if (!suite) {
     throw new Error(`Suite not found: ${suiteId}`);
   }
 
-  const results = suite.cases.map((c) => {
+  const results = selectEvalCasesByTag(suite.cases, tag).map((c) => {
     const output = outputs[c.id] || "";
     const result = evaluateCase(c, output);
     const metrics = caseMetrics[c.id];

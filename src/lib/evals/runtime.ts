@@ -2,7 +2,7 @@ import { POST as postChatCompletion } from "@/app/api/v1/chat/completions/route"
 import type { PersistedEvalRun, EvalTargetType } from "@/lib/db/evals";
 import { saveEvalRun } from "@/lib/db/evals";
 import { getApiKeyById, getCombos } from "@/lib/localDb";
-import { getSuite, listSuites, runSuite } from "./evalRunner";
+import { getSuite, listSuites, runSuite, selectEvalCasesByTag } from "./evalRunner";
 
 export interface EvalTargetInput {
   type: EvalTargetType;
@@ -413,6 +413,7 @@ export async function runEvalSuiteAgainstTarget(input: {
   suiteId: string;
   target?: EvalTargetInput | null;
   apiKeyId?: string;
+  tag?: string;
   runGroupId?: string | null;
 }): Promise<PersistedEvalRun> {
   const suite = getSuite(input.suiteId);
@@ -420,6 +421,7 @@ export async function runEvalSuiteAgainstTarget(input: {
     throw new Error(`Suite not found: ${input.suiteId}`);
   }
 
+  const selectedCases = selectEvalCasesByTag(suite.cases || [], input.tag);
   const normalizedTarget = normalizeEvalTarget(input.target);
   const targetLabel = getEvalTargetLabel(normalizedTarget);
 
@@ -439,7 +441,7 @@ export async function runEvalSuiteAgainstTarget(input: {
   const caseMetrics: Record<string, { durationMs?: number; error?: string }> = {};
   const telemetryByCase: Record<string, EvalTelemetry> = {};
 
-  for (const evalCase of suite.cases || []) {
+  for (const evalCase of selectedCases) {
     const execution = await executeEvalCase(
       input.suiteId,
       (evalCase || {}) as Record<string, unknown>,
@@ -454,7 +456,7 @@ export async function runEvalSuiteAgainstTarget(input: {
     };
   }
 
-  const evaluated = runSuite(input.suiteId, outputs, caseMetrics);
+  const evaluated = runSuite(input.suiteId, outputs, caseMetrics, input.tag);
   const results = evaluated.results.map((result) => ({
     ...result,
     telemetry: telemetryByCase[result.caseId],

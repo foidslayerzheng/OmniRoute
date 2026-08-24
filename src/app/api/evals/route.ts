@@ -90,10 +90,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: validation.error }, { status: 400 });
     }
 
-    const { suiteId, outputs, target, compareTarget, apiKeyId } = validation.data;
+    const { suiteId, outputs, target, compareTarget, apiKeyId, tag } = validation.data;
 
     if (outputs && Object.keys(outputs).length > 0) {
-      const result = runSuite(suiteId, outputs);
+      const result = runSuite(suiteId, outputs, {}, tag);
       return NextResponse.json(result);
     }
 
@@ -109,6 +109,7 @@ export async function POST(request: Request) {
           suiteId,
           target: entry,
           apiKeyId,
+          tag,
           runGroupId,
         })
       )

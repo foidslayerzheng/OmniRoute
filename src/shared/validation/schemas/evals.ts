@@ -60,6 +60,7 @@ export const evalRunSuiteSchema = z
     outputs: z.record(z.string(), z.string()).optional(),
     target: evalTargetSchema.optional(),
     compareTarget: evalTargetSchema.optional(),
+    tag: z.string().trim().min(1).max(64).optional(),
     apiKeyId: z.string().trim().min(1, "apiKeyId must not be empty").optional(),
   })
   .superRefine((value, ctx) => {

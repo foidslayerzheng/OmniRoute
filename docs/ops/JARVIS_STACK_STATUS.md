@@ -67,6 +67,10 @@ API. Routing influence remains **OFF**, and no live benchmark dataset has yet
 been used to tune routing. The next gate is evidence collection and inspection
 before any separately authorized bounded routing influence.
 
+The existing eval API now supports exact, fail-closed per-run tag filtering,
+enabling bounded empirical evidence runs while preserving suite case order. No
+live empirical benchmark has been run yet.
+
 - The currently exposed live OmniRoute model catalog does not expose the
   previously verified LM Studio local model; local-runtime wiring should be
   revisited in the next phase rather than reopening this closeout.
