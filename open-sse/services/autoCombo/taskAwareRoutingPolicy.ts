@@ -86,7 +86,7 @@ type TunerOutcome = Pick<TelemetryEvent, "taskClass" | "model" | "success" | "la
 export class BoundedRoutingTuner {
   private weights: TunerWeights = { ...DEFAULT_TUNER_WEIGHTS };
   private samples = 0;
-  private enabled = true;
+  private enabled = false;
   private readonly outcomes = new Map<string, TunerOutcome[]>();
 
   adjust(observed: Partial<TunerWeights>, sampleCount: number, reason: string) {

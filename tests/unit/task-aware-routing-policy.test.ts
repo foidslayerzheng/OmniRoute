@@ -28,14 +28,31 @@ test("failure categories and bounded tuner", () => {
   assert.equal(classifyFailure(429), "429"); assert.equal(classifyFailure(503), "5xx");
   const t = new BoundedRoutingTuner();
   assert.equal(t.adjust({ quality: 1 }, 1, "burst").changed, false);
+  t.enable();
   t.adjust({ quality: 1, reliability: 0, latency: 1 }, 20, "measured");
   const s = t.getState(); assert.deepEqual(s.weights, { quality: .75, reliability: .2, latency: .25 });
   t.rollback(); assert.deepEqual(t.getState().weights, DEFAULT_TUNER_WEIGHTS); t.disable();
   assert.equal(t.adjust({ quality: .7 }, 100, "disabled").changed, false);
 });
 
+test("runtime tuner is shadow-only until explicitly enabled", () => {
+  const t = new BoundedRoutingTuner();
+  for (let index = 0; index < 20; index++) {
+    t.recordOutcome({ taskClass: "coding", model: "free-model", success: true, latencyMs: 10 });
+  }
+  assert.equal(t.getState().enabled, false);
+  assert.equal(t.getState().samples, 0);
+  assert.equal(t.getPreferenceAdjustment("coding", "free-model"), 0);
+  t.enable();
+  for (let index = 0; index < 20; index++) {
+    t.recordOutcome({ taskClass: "coding", model: "free-model", success: true, latencyMs: 10 });
+  }
+  assert.ok(t.getPreferenceAdjustment("coding", "free-model") > 0);
+});
+
 test("runtime tuner changes only a free preference after 20 non-transient observations", () => {
   const t = new BoundedRoutingTuner();
+  t.enable();
   for (let index = 0; index < 20; index++) {
     t.recordOutcome({ taskClass: "coding", model: "free-model", success: true, latencyMs: 10 });
   }
