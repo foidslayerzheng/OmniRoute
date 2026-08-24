@@ -17,6 +17,33 @@ export interface EvalTargetOption {
   description: string;
 }
 
+export interface EvalTelemetry {
+  schemaVersion: 1;
+  suiteId: string;
+  caseId: string;
+  tags: string[];
+  requestedTarget: { type: EvalTargetType; id: string | null };
+  selectedModel: string | null;
+  provider: string | null;
+  routingDecision: string | null;
+  requestId: string | null;
+  httpStatus: number | null;
+  transportSuccess: boolean | null;
+  latencyMs: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  reasoningTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  fallbackCount: number | null;
+  retryCount: number | null;
+  failureReason: string | null;
+  cacheStatus: string | null;
+  cacheHit: boolean | null;
+  costUsd: number | null;
+  costStatus: "reported" | "cache_hit_zero" | "free_route" | "unknown";
+}
+
 function getNormalizedTargetId(target: EvalTargetInput): string | null {
   return typeof target.id === "string" && target.id.trim().length > 0 ? target.id.trim() : null;
 }
@@ -182,11 +209,129 @@ function resolveCaseModel(evalCase: Record<string, unknown>, target: EvalTargetI
   return caseModel || "gpt-4o";
 }
 
+function optionalHeader(headers: Headers, name: string): string | null {
+  const value = headers.get(name);
+  return value && value.trim().length > 0 ? value.trim() : null;
+}
+
+function finiteNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function integerSignal(value: unknown): number | null {
+  const parsed = finiteNumber(value);
+  return parsed === null ? null : Math.floor(parsed);
+}
+
+function explicitBoolean(value: string | null): boolean | null {
+  if (value === null) return null;
+  const normalized = value.toLowerCase();
+  if (["true", "1", "hit", "yes"].includes(normalized)) return true;
+  if (["false", "0", "miss", "no"].includes(normalized)) return false;
+  return null;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+export function collectEvalTelemetry(input: {
+  suiteId: string;
+  caseId: string;
+  tags: string[];
+  requestedTarget: EvalTargetInput;
+  response: Response;
+  payload: Record<string, unknown> | null;
+  durationMs: number;
+}): EvalTelemetry {
+  const usage = record(input.payload?.usage);
+  const promptDetails = record(usage?.prompt_tokens_details);
+  const inputDetails = record(usage?.input_tokens_details);
+  const bodyUsageAvailable = usage !== null;
+  const selectedModel =
+    optionalHeader(input.response.headers, "X-OmniRoute-Model") ||
+    (typeof input.payload?.model === "string" && input.payload.model.trim()
+      ? input.payload.model.trim()
+      : null);
+  const cacheHit = explicitBoolean(
+    optionalHeader(input.response.headers, "X-OmniRoute-Cache-Hit")
+  );
+  const reportedCost = finiteNumber(
+    optionalHeader(input.response.headers, "X-OmniRoute-Response-Cost")
+  );
+  const freeRoute =
+    selectedModel !== null && (selectedModel.endsWith(":free") || selectedModel === "local-qwen");
+  const costStatus: EvalTelemetry["costStatus"] =
+    reportedCost !== null && reportedCost > 0
+      ? "reported"
+      : cacheHit === true
+        ? "cache_hit_zero"
+        : freeRoute
+          ? "free_route"
+          : "unknown";
+  const costUsd =
+    costStatus === "reported"
+      ? reportedCost
+      : costStatus === "cache_hit_zero" || costStatus === "free_route"
+        ? 0
+        : null;
+  const latencyHeader = finiteNumber(
+    optionalHeader(input.response.headers, "X-OmniRoute-Latency-Ms")
+  );
+
+  return {
+    schemaVersion: 1,
+    suiteId: input.suiteId,
+    caseId: input.caseId,
+    tags: [...input.tags],
+    requestedTarget: {
+      type: input.requestedTarget.type,
+      id: getNormalizedTargetId(input.requestedTarget),
+    },
+    selectedModel,
+    provider: optionalHeader(input.response.headers, "X-OmniRoute-Provider"),
+    routingDecision: optionalHeader(input.response.headers, "X-OmniRoute-Decision"),
+    requestId: optionalHeader(input.response.headers, "X-OmniRoute-Request-Id"),
+    httpStatus: Number.isInteger(input.response.status) ? input.response.status : null,
+    transportSuccess: input.response.ok,
+    latencyMs: latencyHeader ?? Math.max(0, Math.round(input.durationMs)),
+    inputTokens: bodyUsageAvailable
+      ? (integerSignal(usage?.prompt_tokens) ?? integerSignal(usage?.input_tokens))
+      : integerSignal(optionalHeader(input.response.headers, "X-OmniRoute-Tokens-In")),
+    outputTokens: bodyUsageAvailable
+      ? (integerSignal(usage?.completion_tokens) ?? integerSignal(usage?.output_tokens))
+      : integerSignal(optionalHeader(input.response.headers, "X-OmniRoute-Tokens-Out")),
+    reasoningTokens: bodyUsageAvailable ? integerSignal(usage?.reasoning_tokens) : null,
+    cacheReadTokens: bodyUsageAvailable
+      ? (integerSignal(promptDetails?.cached_tokens) ??
+        integerSignal(inputDetails?.cached_tokens) ??
+        integerSignal(usage?.cache_read_input_tokens))
+      : null,
+    cacheWriteTokens: bodyUsageAvailable
+      ? integerSignal(usage?.cache_creation_input_tokens)
+      : null,
+    fallbackCount: integerSignal(
+      optionalHeader(input.response.headers, "X-OmniRoute-Fallback-Attempts")
+    ),
+    retryCount: null,
+    failureReason: input.response.ok ? null : `http_${input.response.status}`,
+    cacheStatus: optionalHeader(input.response.headers, "X-OmniRoute-Cache"),
+    cacheHit,
+    costUsd,
+    costStatus,
+  };
+}
+
 async function executeEvalCase(
+  suiteId: string,
   evalCase: Record<string, unknown>,
   target: EvalTargetInput,
   apiKey: string | null
-): Promise<{ output: string; durationMs: number; error?: string }> {
+): Promise<{ output: string; durationMs: number; error?: string; telemetry: EvalTelemetry }> {
   const input =
     evalCase.input && typeof evalCase.input === "object" && !Array.isArray(evalCase.input)
       ? (evalCase.input as Record<string, unknown>)
@@ -225,12 +370,25 @@ async function executeEvalCase(
     payload = null;
   }
 
+  const telemetry = collectEvalTelemetry({
+    suiteId,
+    caseId: typeof evalCase.id === "string" ? evalCase.id : "",
+    tags: Array.isArray(evalCase.tags)
+      ? evalCase.tags.filter((tag): tag is string => typeof tag === "string")
+      : [],
+    requestedTarget: target,
+    response,
+    payload,
+    durationMs,
+  });
+
   if (!response.ok) {
     const error = extractErrorMessage(payload, response.status);
     return {
       output: `[ERROR] ${error}`,
       durationMs,
       error,
+      telemetry,
     };
   }
 
@@ -238,6 +396,7 @@ async function executeEvalCase(
   return {
     output: output || "[No content returned]",
     durationMs,
+    telemetry,
   };
 }
 
@@ -278,14 +437,17 @@ export async function runEvalSuiteAgainstTarget(input: {
 
   const outputs: Record<string, string> = {};
   const caseMetrics: Record<string, { durationMs?: number; error?: string }> = {};
+  const telemetryByCase: Record<string, EvalTelemetry> = {};
 
   for (const evalCase of suite.cases || []) {
     const execution = await executeEvalCase(
+      input.suiteId,
       (evalCase || {}) as Record<string, unknown>,
       normalizedTarget,
       resolvedApiKey
     );
     outputs[evalCase.id] = execution.output;
+    telemetryByCase[evalCase.id] = execution.telemetry;
     caseMetrics[evalCase.id] = {
       durationMs: execution.durationMs,
       ...(execution.error ? { error: execution.error } : {}),
@@ -293,6 +455,10 @@ export async function runEvalSuiteAgainstTarget(input: {
   }
 
   const evaluated = runSuite(input.suiteId, outputs, caseMetrics);
+  const results = evaluated.results.map((result) => ({
+    ...result,
+    telemetry: telemetryByCase[result.caseId],
+  }));
   return saveEvalRun({
     runGroupId: input.runGroupId || null,
     suiteId: evaluated.suiteId,
@@ -305,7 +471,7 @@ export async function runEvalSuiteAgainstTarget(input: {
     apiKeyId: input.apiKeyId || null,
     avgLatencyMs: getAverageLatency(caseMetrics),
     summary: evaluated.summary,
-    results: evaluated.results as Array<Record<string, unknown>>,
+    results: results as Array<Record<string, unknown>>,
     outputs,
   });
 }

@@ -59,6 +59,57 @@ test("eval run history persists target metadata and newest-first ordering", () =
   assert.equal(runs[1].outputs.c1, "ok");
 });
 
+test("eval telemetry survives persistence and legacy results remain compatible", () => {
+  const telemetry = {
+    schemaVersion: 1,
+    suiteId: "golden-set",
+    caseId: "c1",
+    tags: ["smoke"],
+    requestedTarget: { type: "model", id: "openrouter/model:free" },
+    selectedModel: "openrouter/model:free",
+    provider: "openrouter",
+    routingDecision: "direct",
+    requestId: "req-round-trip",
+    httpStatus: 200,
+    transportSuccess: true,
+    latencyMs: 12,
+    inputTokens: 3,
+    outputTokens: 2,
+    reasoningTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    fallbackCount: null,
+    retryCount: null,
+    failureReason: null,
+    cacheStatus: null,
+    cacheHit: null,
+    costUsd: 0,
+    costStatus: "free_route",
+  };
+  evalsDb.saveEvalRun({
+    suiteId: "golden-set",
+    suiteName: "Golden Set",
+    target: { type: "model", id: "openrouter/model:free", label: "Free model" },
+    summary: { total: 1, passed: 1, failed: 0, passRate: 100 },
+    results: [
+      { caseId: "c1", caseName: "Case 1", passed: true, durationMs: 12, telemetry },
+    ],
+  });
+  evalsDb.saveEvalRun({
+    suiteId: "legacy-set",
+    suiteName: "Legacy Set",
+    target: { type: "suite-default", id: null, label: "Suite defaults" },
+    summary: { total: 1, passed: 1, failed: 0, passRate: 100 },
+    results: [{ caseId: "legacy", caseName: "Legacy", passed: true, durationMs: 5 }],
+  });
+
+  const runs = evalsDb.listEvalRuns({ limit: 10 });
+  const current = runs.find((run) => run.suiteId === "golden-set");
+  const legacy = runs.find((run) => run.suiteId === "legacy-set");
+  assert.deepEqual(current?.results[0]?.telemetry, telemetry);
+  assert.equal(Object.hasOwn(legacy?.results[0] || {}, "telemetry"), false);
+});
+
 test("scorecard keeps only the latest run per suite and target scope", () => {
   evalsDb.saveEvalRun({
     suiteId: "golden-set",
