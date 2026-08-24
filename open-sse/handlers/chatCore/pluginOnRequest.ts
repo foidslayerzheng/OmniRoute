@@ -16,7 +16,7 @@ type LoggerLike =
 
 export type PluginOnRequestGate =
   | { blocked: true; response: Response }
-  | { blocked: false; body?: unknown };
+  | { blocked: false; body?: unknown; metadata: Record<string, unknown> };
 
 const JSON_HEADERS = { status: 403, headers: { "Content-Type": "application/json" } } as const;
 
@@ -54,12 +54,12 @@ export async function runPluginOnRequestHook(args: {
     if (pluginResult?.metadata) {
       Object.assign(pluginCtx.metadata, pluginResult.metadata);
     }
-    return { blocked: false, body: pluginResult?.body };
+    return { blocked: false, body: pluginResult?.body, metadata: pluginCtx.metadata };
   } catch (pluginErr) {
     args.log?.debug?.(
       "PLUGIN",
       `onRequest hook error (non-fatal): ${pluginErr instanceof Error ? pluginErr.message : String(pluginErr)}`
     );
-    return { blocked: false };
+    return { blocked: false, metadata: {} };
   }
 }

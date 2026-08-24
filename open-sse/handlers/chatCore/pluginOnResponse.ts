@@ -23,6 +23,7 @@ export async function runPluginOnResponseHook(args: {
   body: unknown;
   model: string | null | undefined;
   provider: string | null | undefined;
+  metadata?: Record<string, unknown>;
   apiKeyInfo: unknown;
   response: PluginOnResponsePayload;
 }): Promise<void> {
@@ -35,7 +36,7 @@ export async function runPluginOnResponseHook(args: {
         model: args.model,
         provider: args.provider,
         apiKeyInfo: args.apiKeyInfo,
-        metadata: {},
+        metadata: args.metadata ?? {},
       },
       args.response
     ).catch(() => {});

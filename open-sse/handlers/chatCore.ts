@@ -508,6 +508,7 @@ export async function handleChatCore({
   if (pluginGate.body) {
     body = pluginGate.body;
   }
+  const pluginMetadata = pluginGate.metadata;
   // Per-API-key device/connection tracking (port of upstream 9router#931,
   // thanks @mugnimaestra). In-memory only, never blocks the request path.
   if (apiKeyInfo?.id) {
@@ -4611,6 +4612,7 @@ export async function handleChatCore({
       model,
       provider,
       apiKeyInfo,
+      metadata: pluginMetadata,
       response: { status: 200, data: translatedResponse },
     });
 
@@ -5001,6 +5003,7 @@ export async function handleChatCore({
     model,
     provider,
     apiKeyInfo,
+    metadata: pluginMetadata,
     response: { status: 200, streamed: true },
   });
 

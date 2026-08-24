@@ -51,6 +51,17 @@ time; they must not be interpreted as the current production state.
 - Task-type/weight/result-quality telemetry is not yet rich enough for fully
   empirical routing decisions.
 
+### Plugin lifecycle metadata continuity — 2026-08-24
+
+A focused RED regression established that request-side plugin metadata was replaced
+with a fresh object before the response hook. The generic request-scoped lifecycle
+now preserves the same sanitized metadata object through both non-streaming and
+streaming response hooks. Langfuse sampling/start fields and safe routing
+correlation fields therefore survive request to response; concurrent requests
+remain isolated. Focused plugin tests pass 11/11. This changes no routing,
+authentication, Governor, Task Observer, provider-selection, or free-only behavior.
+The management-authenticated empirical benchmark remains separately deferred.
+
 ### Empirical OmniRoute Aggregation v1
 
 Empirical OmniRoute Aggregation v1 provides a pure, read-only offline layer that
