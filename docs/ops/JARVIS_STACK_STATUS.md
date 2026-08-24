@@ -1,10 +1,78 @@
 ---
 title: "JARVIS / Hermes no-spend completion status"
+last_verified: "2026-08-24"
+production_closeout: "complete"
 ---
 
 # JARVIS / Hermes no-spend completion status
 
-## Scope and safety boundary
+## Authoritative production closeout — 2026-08-24
+
+**Current production closeout status: COMPLETE.**
+
+This section supersedes stale operational blockers in the historical evaluation
+sections below. Those sections are retained as evidence of what was known at the
+time; they must not be interpreted as the current production state.
+
+### Verified production state
+
+| Area | Current status | Verified evidence |
+| --- | --- | --- |
+| Task Observer | **PASS** | 26/26 focused tests; duplicate suppression, evidence attachment, review path, fake/unknown ID fail-closed behavior, lifecycle state, and hard-disabled deployment verified. |
+| OmniRoute free-only routing | **PASS / LIVE** | `auto/best-free` free-only enforcement deployed; focused paid-model filter 6/6 PASS and AutoCombo regression 36/36 PASS. |
+| Phase D task-aware routing | **PASS / LIVE** | Deterministic classifier distinguishes light vs heavy work; live `auto/best-free` behavior demonstrated different task-aware selections while retaining free-only enforcement. |
+| Controlled fallback | **PASS / LIVE** | A single live request correlation showed first-target failure followed by second-target HTTP 200 success. |
+| Phase E semantic cache | **PASS / LIVE** | Unique request demonstrated `MISS -> upstream -> HIT`; DB showed one upstream row followed by one semantic-cache row; cache hit returned without a second upstream request. |
+| Production stability | **PASS** | 6-hour stability observation completed 24/24 samples with zero failures; Hermes/OmniRoute services remained healthy. |
+| Governor protected checkpoint | **PASS / LIVE** | Hermes commit `1c1834de`; focused regression 11/11 PASS. Protected verification reserve is one-shot, fresh context is request-only, durable history is unchanged, and normal iteration budget is unchanged. |
+| Hermes live services | **PASS** | `hermes-gateway.service` and `hermes-desktop-backend.service` restarted after Governor deployment and returned active/running. |
+| Qdrant Cloud | **RECOVERED / ANCILLARY** | Suspended cluster reactivated; `hermes_test` collection returned HTTP 200/green with one point. Data exported to `/home/louis/jarvis-backups/qdrant/hermes_test-20260824-025340.json` with SHA-256 `57680ed3807348cf789d5927bc1f6d8ea19a7bb44ce03ec7da4ae21f3b0828f6`. |
+| Hermes memory | **PASS** | Active memory provider is Hindsight; `hermes memory status` reports plugin installed and available. Built-in `MEMORY.md` / `USER.md` injection and memory tool are enabled. Qdrant is not the active Hermes memory provider. |
+| Paid-routing boundary | **PASS** | Current closeout used free-only routing where required and did not authorize paid fallback. Exact general per-request dollar telemetry remains an observability gap rather than a closeout blocker. |
+
+### Safety invariants retained
+
+- Task Observer deployment remains hard-disabled unless separately authorized.
+- No uncontrolled self-modification was enabled.
+- Governor protected continuation is bounded to one grace call per turn.
+- Governor fresh context affects only the provider request copy; durable history
+  is not destructively pruned.
+- Free-only routing fails closed rather than silently selecting a paid model.
+- Qdrant recovery/export performed no data mutation beyond the explicit user
+  reactivation action in Qdrant Cloud.
+- Secrets and credentials are not recorded in this status document.
+
+### Non-blocking technical debt
+
+- The optional Telegram/PTB synthetic all-extras test environment remains
+  dependency debt; it is not a core production blocker.
+- General explicit dollar-cost telemetry is not yet persisted for every
+  OmniRoute request.
+- Task-type/weight/result-quality telemetry is not yet rich enough for fully
+  empirical routing decisions.
+- The currently exposed live OmniRoute model catalog does not expose the
+  previously verified LM Studio local model; local-runtime wiring should be
+  revisited in the next phase rather than reopening this closeout.
+
+### Next phase
+
+The production closeout is finished. Further work is roadmap expansion, not
+closeout remediation:
+
+1. Build the JARVIS Evaluation Suite for coding, research, browser use, memory,
+   long context, routing, deployment, prompt injection, retries, and provider/
+   tool failures, with Langfuse-backed regression tracking.
+2. Make OmniRoute empirical: record task type, selected model, latency,
+   cost/tokens when available, retries, failure reason, and outcome quality;
+   prefer cheap/local routes when measured reliability is sufficient and
+   escalate quickly when expected success is poor.
+3. Establish the universal task contract across Hermes, Task Observer,
+   Governor, OmniRoute, and workers.
+4. Continue planned model/provider expansion and routing validation.
+5. Use the stable core for zero-capital revenue-generating workflows and turn
+   successful repeatable workflows into reusable JARVIS skills/businesses.
+
+## Historical constrained-evaluation scope and safety boundary
 
 This record covers the constrained JARVIS evaluation conducted against the
 isolated `jarvis-phase-d` OmniRoute source checkout. It does not authorize a
