@@ -1,6 +1,6 @@
 ---
 title: "JARVIS / Hermes no-spend completion status"
-last_verified: "2026-08-24"
+last_verified: "2026-08-25"
 production_closeout: "complete"
 ---
 
@@ -41,6 +41,48 @@ time; they must not be interpreted as the current production state.
 - Qdrant recovery/export performed no data mutation beyond the explicit user
   reactivation action in Qdrant Cloud.
 - Secrets and credentials are not recorded in this status document.
+
+### Round 1 runtime consistency and acceptance audit — 2026-08-25
+
+- **Active deployment:** `omniroute.service` is active and healthy, but its
+  `ExecStart` remains the installed npm entrypoint under
+  `/home/louis/.local/lib/node_modules/omniroute`, not this development checkout.
+  Installed product version `3.8.49` matches the checkout version but source
+  comparison proves the installed runtime lacks `selectEvalCasesByTag`; matching
+  versions therefore do not establish code parity. Exact tag filtering,
+  zero-match fail-closed behavior, observability metadata continuity, and bounded
+  empirical-routing changes in this checkout are **not proven live**.
+- **Deployment decision:** `LIVE_DEPLOYMENT=DEFERRED_REQUIRES_USER`. No repository-
+  proven, network-free, transactional systemd deployment procedure was found that
+  points the service at a locally built exact commit and automatically restores
+  the current installed entrypoint if readiness fails. The installed package was
+  not hand-edited, no service was restarted, and `~/.omniroute` data/config and
+  credentials were untouched.
+- **Management authentication:** existing loopback management access to
+  `http://127.0.0.1:20128` succeeds through the allowlisted authenticated Host
+  Operator path (`GET /api/providers` and `GET /api/provider-models` both HTTP
+  200). `MANAGEMENT_AUTH=PASS_LOOPBACK`; no context or auth setting changed.
+- **Empirical benchmark:** correctly not run because the independent live-runtime
+  parity gate failed. Zero local model calls and zero paid model calls were made.
+  The active provider view does show an active `Local Qwen` connection with
+  default model `local-qwen`, but provider/model readiness alone does not override
+  the deployment gate. Empirical routing authority remains OFF/shadow.
+- **Focused verification:** eval-tag/runtime/empirical focused group 22/22 PASS;
+  JARVIS Core suite 9/9 PASS; plugin metadata continuity/isolation 2/2 PASS. An
+  offline context-relay test also passed 2/2, but its fakes emit provider-like log
+  lines and are not live provider evidence. Two initially requested test paths
+  were absent; existing source/tests were located instead and no coverage was
+  fabricated.
+- **Acceptance audit:** no material gap justified a new universal-envelope rewrite
+  or score-inflating tests. Existing deterministic suite coverage supports coding,
+  provider-failure/retry, deployment-safety, and core prompt-injection cases.
+  Research/tool synthesis, active memory integration, realistic long-context
+  preservation, browser/tool-boundary prompt injection, cross-subsystem task
+  correlation, and broad model/provider execution remain PARTIAL until realistic
+  integration evidence exists. Current discovery shows configured Local Qwen,
+  OpenRouter Free, MiniMax, and MiMo connections; `/api/provider-models` returned
+  an empty discovered-model map, and no paid or metadata-refresh calls were made.
+  Unknown telemetry remains unknown/null.
 
 ### Non-blocking technical debt
 
