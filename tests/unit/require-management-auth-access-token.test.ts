@@ -82,3 +82,17 @@ test("no credential at all → 401 (auth still required)", async () => {
   const denied = await requireManagementAuth(req("GET", "/api/v1/models"));
   assert.equal(denied?.status, 401);
 });
+
+test("loopback CLI token remains valid when trusted pipeline locality is present with forwarded headers", async () => {
+  const { getLegacyCliTokenSync } = await import("../../src/lib/machineToken.ts");
+  const request = new Request(`${BASE}/api/evals`, {
+    method: "POST",
+    headers: {
+      "x-omniroute-cli-token": getLegacyCliTokenSync(),
+      "x-omniroute-peer-locality": "loopback",
+      "x-forwarded-for": "127.0.0.1",
+    },
+  });
+
+  assert.equal(await requireManagementAuth(request), null);
+});

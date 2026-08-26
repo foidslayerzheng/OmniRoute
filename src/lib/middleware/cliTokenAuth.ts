@@ -49,19 +49,21 @@ async function isLocalCliRequest(request: RequestWithPeer): Promise<boolean> {
   const peerAddress = requestPeerAddress(request);
   if (peerAddress) return isLoopback(peerAddress);
 
-  // 2. A forwarded request came through a proxy → it is not a local CLI call.
+  // 2. Behind the authz pipeline, trust ONLY the locality verdict the middleware
+  //    stamped from the real TCP peer IP. Next/server plumbing may also add
+  //    forwarding headers to legitimate loopback requests, so this trusted
+  //    verdict must take precedence over generic forwarding-header detection.
+  //    Client-supplied locality headers are stripped and re-stamped by the
+  //    authz pipeline before route handlers run.
+  const locality = await readHeader(request, AUTHZ_HEADER_PEER_LOCALITY);
+  if (locality !== null) return locality === "loopback";
+
+  // 3. Without a trusted pipeline verdict, any forwarded request is non-local.
   const forwardedPeer =
     firstHeaderIp(await readHeader(request, "cf-connecting-ip")) ||
     firstHeaderIp(await readHeader(request, "x-forwarded-for")) ||
     firstHeaderIp(await readHeader(request, "x-real-ip"));
   if (forwardedPeer) return false;
-
-  // 3. Behind the authz pipeline, trust ONLY the locality verdict the middleware
-  //    stamped from the real TCP peer IP. NEVER derive locality from the Host
-  //    header (new URL(request.url).hostname) — it is client-controlled, so a
-  //    remote caller with a stolen CLI token could send Host: 127.0.0.1 to pass.
-  const locality = await readHeader(request, AUTHZ_HEADER_PEER_LOCALITY);
-  if (locality !== null) return locality === "loopback";
 
   // 4. No trusted locality signal → fail closed.
   return false;
