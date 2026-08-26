@@ -268,3 +268,11 @@ as availability only and do not update quality routing weights.
    its modification root to be allowlisted.
 3. Live service-health, approval-rejection, and operational restore evidence
    require a safe read-only endpoint or explicit operator authorization.
+
+## 2026-08-26 production verification
+- Exact build 9ffcd47ee deployed and active.
+- Repo clean after deployment.
+- Eval tag filtering verified: zero-match fails closed; task-class:simple selects exactly 3 cases.
+- local-qwen reachable and tested with 6 local-only calls; strict exact result 3/6.
+- Empirical routing remains OFF/shadow; sample minimum not met.
+- Remaining issue: localhost eval CLI management auth returns 401.
