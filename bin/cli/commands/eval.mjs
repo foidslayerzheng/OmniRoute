@@ -128,15 +128,21 @@ export async function runEvalSuitesCreate(opts, cmd) {
   emit(await res.json(), cmd.optsWithGlobals());
 }
 
-export async function runEvalRun(suiteId, opts, cmd) {
-  const globalOpts = cmd.optsWithGlobals();
-  const body = {
+export function buildEvalRunBody(suiteId, opts = {}) {
+  const target = opts.combo
+    ? { type: "combo", id: opts.combo }
+    : { type: "model", id: opts.model ?? "auto" };
+
+  return {
     suiteId,
-    model: opts.model ?? "auto",
-    ...(opts.combo ? { combo: opts.combo } : {}),
-    concurrency: opts.concurrency ?? 4,
+    target,
     ...(opts.tag ? { tag: opts.tag } : {}),
   };
+}
+
+export async function runEvalRun(suiteId, opts, cmd) {
+  const globalOpts = cmd.optsWithGlobals();
+  const body = buildEvalRunBody(suiteId, opts);
   const res = await apiFetch("/api/evals", { method: "POST", body });
   if (!res.ok) {
     process.stderr.write(`Error: ${res.status}\n`);
