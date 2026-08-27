@@ -19,6 +19,7 @@ const modelsDb = await import("../../src/lib/db/models.ts");
 const callLogs = await import("../../src/lib/usage/callLogs.ts");
 const modelSyncRoute = await import("../../src/app/api/providers/[id]/sync-models/route.ts");
 const scheduler = await import("../../src/shared/services/modelSyncScheduler.ts");
+const sseModelService = await import("../../src/sse/services/model.ts");
 const originalFetch = globalThis.fetch;
 
 async function resetStorage() {
@@ -1012,4 +1013,115 @@ test("model sync route falls back to in-process discovery when internal self-fet
   );
   assert.equal(fetchCalls[3], "https://api.bltcy.ai/v1/models", "4th call should be upstream");
   assert.equal(fetchCalls.length, 4, "should have exactly 3 retries + 1 upstream call");
+});
+
+test("slashful synced model ids resolve through their active provider catalog", async () => {
+  await resetStorage();
+
+  const connection = await providersDb.createProviderConnection({
+    provider: "openrouter",
+    authType: "apikey",
+    name: "OpenRouter Slashful Model",
+    apiKey: "test-key",
+  });
+
+  const modelId = "nvidia/nemotron-3.5-lightning:free";
+
+  await modelsDb.replaceSyncedAvailableModelsForConnection("openrouter", connection.id, [
+    {
+      id: modelId,
+      name: "Nemotron 3.5 Lightning",
+      source: "imported",
+    },
+  ]);
+
+  const info = await sseModelService.getModelInfo(modelId);
+
+  assert.equal(info.provider, "openrouter");
+  assert.equal(info.model, modelId);
+  assert.equal(info.extendedContext, false);
+});
+
+test("slashful synced model ids preserve valid explicit provider ownership", async () => {
+  await resetStorage();
+
+  const nvidiaConnection = await providersDb.createProviderConnection({
+    provider: "nvidia",
+    authType: "apikey",
+    name: "NVIDIA Direct",
+    apiKey: "test-key",
+  });
+
+  const openrouterConnection = await providersDb.createProviderConnection({
+    provider: "openrouter",
+    authType: "apikey",
+    name: "OpenRouter Full ID",
+    apiKey: "test-key",
+  });
+
+  await modelsDb.replaceSyncedAvailableModelsForConnection("nvidia", nvidiaConnection.id, [
+    {
+      id: "nemotron-3.5-lightning:free",
+      name: "Nemotron Direct",
+      source: "imported",
+    },
+  ]);
+
+  await modelsDb.replaceSyncedAvailableModelsForConnection(
+    "openrouter",
+    openrouterConnection.id,
+    [
+      {
+        id: "nvidia/nemotron-3.5-lightning:free",
+        name: "Nemotron via OpenRouter",
+        source: "imported",
+      },
+    ]
+  );
+
+  const info = await sseModelService.getModelInfo(
+    "nvidia/nemotron-3.5-lightning:free"
+  );
+
+  assert.equal(info.provider, "nvidia");
+  assert.equal(info.model, "nemotron-3.5-lightning:free");
+  assert.equal(info.extendedContext, false);
+});
+
+test("slashful synced model ids preserve active explicit providers during catalog lag", async () => {
+  await resetStorage();
+
+  await providersDb.createProviderConnection({
+    provider: "nvidia",
+    authType: "apikey",
+    name: "NVIDIA Catalog Lag",
+    apiKey: "test-key",
+  });
+
+  const openrouterConnection = await providersDb.createProviderConnection({
+    provider: "openrouter",
+    authType: "apikey",
+    name: "OpenRouter Full ID During Lag",
+    apiKey: "test-key",
+  });
+
+  await modelsDb.replaceSyncedAvailableModelsForConnection(
+    "openrouter",
+    openrouterConnection.id,
+    [
+      {
+        id: "nvidia/nemotron-brand-new:free",
+        name: "Nemotron Brand New",
+        source: "imported",
+      },
+    ]
+  );
+
+  const info = await sseModelService.getModelInfo(
+    "nvidia/nemotron-brand-new:free"
+  );
+
+  assert.equal(info.provider, "nvidia");
+  assert.equal(info.model, "nemotron-brand-new:free");
+  assert.equal(info.extendedContext, false);
 });

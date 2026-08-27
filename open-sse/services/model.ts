@@ -224,7 +224,7 @@ function resolveProviderModelAlias(
   return aliases?.[modelId] || modelId;
 }
 
-function hasKnownProviderModel(providerOrAlias: string | null | undefined, modelId: string | null) {
+export function hasKnownProviderModel(providerOrAlias: string | null | undefined, modelId: string | null) {
   if (!providerOrAlias || !modelId) return false;
 
   const providerId = resolveProviderAlias(providerOrAlias);

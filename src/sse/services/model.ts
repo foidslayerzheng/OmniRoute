@@ -6,13 +6,18 @@ import {
   getComboByNameInsensitive,
   getCachedProviderNodes,
   getCustomModels,
+  getCachedProviderConnections,
 } from "@/lib/localDb";
 import { getCachedSettings } from "@/lib/localDb";
-import { getSyncedAvailableModels } from "@/lib/db/models";
+import {
+  getSyncedAvailableModels,
+  getActiveProvidersWithSyncedModel,
+} from "@/lib/db/models";
 import {
   parseModel,
   getModelInfoCore,
   splitSyncedEffortSuffix,
+  hasKnownProviderModel,
 } from "@omniroute/open-sse/services/model.ts";
 import { REGISTRY } from "@omniroute/open-sse/config/providerRegistry.ts";
 
@@ -323,6 +328,84 @@ export async function getModelInfo(modelStr) {
           extendedContext,
           ...metadata,
         };
+      }
+    }
+
+    // Some upstream catalogs expose slashful model IDs such as
+    // "nvidia/nemotron-3.5-lightning:free". A slash is therefore ambiguous:
+    // it may delimit provider/model, or it may be part of the upstream model ID.
+    //
+    // Preserve genuine explicit-provider routes first. Otherwise, resolve an
+    // unambiguous exact full-ID match from the active synchronized catalogs.
+    if (typeof modelStr === "string" && modelStr.includes("/") && parsed.model) {
+      const parsedProvider =
+        typeof parsed.provider === "string" ? parsed.provider : null;
+
+      // An explicit provider/model route remains authoritative when that
+      // provider actually owns the provider-scoped model, either statically
+      // or through its active synced catalog.
+      const parsedProviderHasStaticModel = hasKnownProviderModel(
+        parsed.providerAlias || parsed.provider,
+        parsed.model as string
+      );
+
+      const providerScopedOwners = parsedProvider
+        ? await getActiveProvidersWithSyncedModel(String(parsed.model)).catch(() => [])
+        : [];
+
+      const parsedProviderHasSyncedModel =
+        parsedProvider !== null && providerScopedOwners.includes(parsedProvider);
+
+      // A genuinely active explicit provider prefix remains authoritative even
+      // when its synchronized catalog is stale or has not learned the model yet.
+      // This preserves routes such as "openai/new-model" rather than allowing an
+      // aggregator's full slashful catalog ID to steal them.
+      const activeConnections = parsedProvider
+        ? await getCachedProviderConnections({ isActive: true }).catch(() => [])
+        : [];
+
+      const parsedProviderIsActive =
+        parsedProvider !== null &&
+        activeConnections.some((connection: any) => {
+          if (!connection || typeof connection !== "object") return false;
+          const provider =
+            typeof connection.provider === "string" ? connection.provider : null;
+          const active =
+            connection.isActive !== undefined
+              ? connection.isActive !== false && connection.isActive !== 0
+              : connection.is_active !== undefined
+                ? connection.is_active !== false && connection.is_active !== 0
+                : true;
+          return active && provider === parsedProvider;
+        });
+
+      // Otherwise the slash may belong to the upstream model ID itself
+      // (e.g. OpenRouter's "nvidia/nemotron-3.5-lightning:free").
+      // Resolve only an unambiguous exact full-ID match from active synced catalogs.
+      if (
+        !parsedProviderIsActive &&
+        !parsedProviderHasStaticModel &&
+        !parsedProviderHasSyncedModel
+      ) {
+        const syncedModelId = modelStr.endsWith("[1m]")
+          ? modelStr.slice(0, -4).trim()
+          : modelStr.trim();
+
+        const syncedProviders =
+          await getActiveProvidersWithSyncedModel(syncedModelId).catch(() => []);
+
+        const uniqueProviders = Array.from(new Set(syncedProviders));
+
+        if (uniqueProviders.length === 1) {
+          const provider = uniqueProviders[0];
+          const { modelId, metadata } = await lookupModelMeta(provider, syncedModelId);
+          return {
+            provider,
+            model: modelId,
+            extendedContext,
+            ...metadata,
+          };
+        }
       }
     }
 
