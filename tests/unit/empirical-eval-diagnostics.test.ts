@@ -73,6 +73,8 @@ test("GET aggregates persisted rich and legacy evidence without exposing raw mat
       telemetry: {
         tags: ["coding"],
         transportSuccess: false,
+        selectedModel: "model-b",
+        provider: "provider-b",
         latencyMs: 25,
         retryCount: 1,
         fallbackCount: 0,
@@ -121,7 +123,12 @@ test("five deterministic samples become shadow-ready without routing effects", (
   const results = Array.from({ length: 5 }, (_, index) => ({
     caseId: `case-${index}`,
     passed: true,
-    telemetry: { tags: ["coding"], transportSuccess: index !== 0 },
+    telemetry: {
+      tags: ["coding"],
+      transportSuccess: index !== 0,
+      selectedModel: "model-b",
+      provider: "provider-b",
+    },
   }));
   saveModelRun("ready", results);
   const persistedRuns = localDb.listEvalRuns({ limit: 1000 });

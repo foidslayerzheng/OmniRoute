@@ -114,6 +114,11 @@ export function normalizeEmpiricalEvalRuns(runs: readonly PersistedEvalRun[]): E
       const result = asRecord(rawResult);
       if (!result) continue;
       const telemetry = asRecord(result.telemetry);
+      if (
+        telemetry?.transportSuccess === false
+        && asNullableString(telemetry.selectedModel) === null
+        && asNullableString(telemetry.provider) === null
+      ) continue;
       const transportSuccess = typeof telemetry?.transportSuccess === "boolean"
         ? telemetry.transportSuccess
         : null;

@@ -31,7 +31,8 @@ function result(overrides: Record<string, unknown> = {}): Record<string, unknown
 test("normalizes telemetry-rich deterministic records without conflating evidence streams", () => {
   const [record] = normalizeEmpiricalEvalRuns([
     run({ results: [result({ telemetry: {
-      tags: ["coding"], transportSuccess: false, latencyMs: 50, retryCount: 2,
+      tags: ["coding"], transportSuccess: false, selectedModel: "model-b", provider: "provider-b",
+      latencyMs: 50, retryCount: 2,
       fallbackCount: 1, httpStatus: 503, costUsd: 0.02, costStatus: "reported",
     } })] }),
   ]);
@@ -42,6 +43,30 @@ test("normalizes telemetry-rich deterministic records without conflating evidenc
     latencyMs: 50, retryCount: 2, fallbackCount: 1, failureClass: "5xx",
     costUsd: 0.02, costStatus: "reported",
   });
+});
+
+test("excludes only explicit pre-dispatch transport failures from model evidence", () => {
+  const records = normalizeEmpiricalEvalRuns([run({ results: [
+    result({ caseId: "pre-dispatch-404", passed: false, telemetry: {
+      transportSuccess: false, selectedModel: null, provider: null, httpStatus: 404,
+    } }),
+    result({ caseId: "dispatched-503", passed: false, telemetry: {
+      transportSuccess: false, selectedModel: "model-b", provider: "provider-b", httpStatus: 503,
+    } }),
+    result({ caseId: "success", passed: true, telemetry: {
+      transportSuccess: true, selectedModel: "model-b", provider: "provider-b", httpStatus: 200,
+    } }),
+    result({ caseId: "legacy", passed: false }),
+  ] })]);
+
+  assert.deepEqual(records.map((record) => record.caseId), ["dispatched-503", "success", "legacy"]);
+  assert.equal(records[0].evalPassed, false);
+  assert.equal(records[0].transportSuccess, false);
+  assert.equal(records[0].failureClass, "5xx");
+  assert.equal(records[1].evalPassed, true);
+  assert.equal(records[1].transportSuccess, true);
+  assert.equal(records[2].evalPassed, false);
+  assert.equal(records[2].transportSuccess, null);
 });
 
 test("accepts legacy records and preserves unknown values as null", () => {
@@ -70,7 +95,7 @@ test("normalizes latency, counts, bounded failures, and trusted costs", () => {
     result({ caseId: "fallback", durationMs: 70 }),
     result({ caseId: "429", telemetry: { httpStatus: 429 } }),
     result({ caseId: "success", telemetry: { transportSuccess: true } }),
-    result({ caseId: "unknown", telemetry: { transportSuccess: false, httpStatus: 400 } }),
+    result({ caseId: "unknown", telemetry: { transportSuccess: false, selectedModel: "model-b", provider: "provider-b", httpStatus: 400 } }),
     result({ caseId: "positive", telemetry: { costUsd: 0.3, costStatus: "reported" } }),
     result({ caseId: "free", telemetry: { costUsd: 0, costStatus: "free_route" } }),
     result({ caseId: "cache", telemetry: { costUsd: 0, costStatus: "cache_hit_zero" } }),
@@ -91,7 +116,7 @@ test("normalizes latency, counts, bounded failures, and trusted costs", () => {
 test("aggregates each evidence dimension using known samples only", () => {
   const groups = aggregateEmpiricalEvalRuns([run({ results: [
     result({ caseId: "a", passed: true, telemetry: { tags: ["coding"], transportSuccess: true, latencyMs: 10, retryCount: 0, fallbackCount: 2, costUsd: 0.1, costStatus: "reported" } }),
-    result({ caseId: "b", passed: false, telemetry: { tags: ["coding"], transportSuccess: false, latencyMs: 20, retryCount: 2, fallbackCount: 0, httpStatus: 503, costUsd: 0.3, costStatus: "reported" } }),
+    result({ caseId: "b", passed: false, telemetry: { tags: ["coding"], transportSuccess: false, selectedModel: "model-b", provider: "provider-b", latencyMs: 20, retryCount: 2, fallbackCount: 0, httpStatus: 503, costUsd: 0.3, costStatus: "reported" } }),
     result({ caseId: "c", passed: true, telemetry: { tags: ["coding"], latencyMs: 30 } }),
     result({ caseId: "d", passed: false, telemetry: { tags: ["coding"], latencyMs: 40 } }),
     result({ caseId: "e", passed: true, telemetry: { tags: ["coding"], latencyMs: 100 } }),
