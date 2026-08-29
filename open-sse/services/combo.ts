@@ -138,6 +138,7 @@ import {
   waitForCooldownAwareRetry,
 } from "../../src/sse/services/cooldownAwareRetry.ts";
 import { dispatchChaosFromCombo, type ChaosTuning } from "./autoCombo/chaosEngine.ts";
+import { recordAutoBestFreeCandidateFailure } from "./autoCombo/failureResilience.ts";
 import {
   TRANSIENT_FOR_SEMAPHORE,
   MAX_FALLBACK_WAIT_MS,
@@ -1628,6 +1629,21 @@ export async function handleComboChat({
           const targetWithConnection = selectedConnectionId
             ? { ...target, connectionId: selectedConnectionId }
             : target;
+          const mlSettings = resolveModelLockoutSettings(settings);
+          if (!scopedFailure) {
+            recordAutoBestFreeCandidateFailure({
+              comboName: combo.name,
+              provider,
+              connectionId: targetWithConnection.connectionId,
+              model: rawModel,
+              status: result.status,
+              errorText,
+              baseCooldownMs: mlSettings.baseCooldownMs,
+              maxCooldownMs: mlSettings.maxCooldownMs,
+              profile,
+              retryAfterMs: lockoutHintMs,
+            });
+          }
 
           // #1731 / #1731v2: classify the upstream error and update the exhaustion sets
           // (shared with handleRoundRobinCombo). Returns whether the provider is fully exhausted.
@@ -2802,6 +2818,26 @@ async function handleRoundRobinCombo({
         const targetWithConnection = selectedConnectionId
           ? { ...target, connectionId: selectedConnectionId }
           : target;
+        const rawModel = parseModel(modelStr).model || modelStr;
+        const lockoutHintMs =
+          fallbackResult.usedUpstreamRetryHint === true
+            ? cooldownMs
+            : (fallbackResult.quotaResetHintMs ?? 0);
+        const mlSettings = resolveModelLockoutSettings(settings);
+        if (!scopedFailure) {
+          recordAutoBestFreeCandidateFailure({
+            comboName: combo.name,
+            provider,
+            connectionId: targetWithConnection.connectionId,
+            model: rawModel,
+            status: result.status,
+            errorText,
+            baseCooldownMs: mlSettings.baseCooldownMs,
+            maxCooldownMs: mlSettings.maxCooldownMs,
+            profile,
+            retryAfterMs: lockoutHintMs,
+          });
+        }
 
         const isAllAccountsRateLimited = isAllAccountsRateLimitedResponse(
           result.status,
@@ -2819,7 +2855,7 @@ async function handleRoundRobinCombo({
           result,
           fallbackResult,
           errorText,
-          rawModel: parseModel(modelStr).model || modelStr,
+          rawModel,
           isTokenLimitBreach,
           allAccountsRateLimited: isAllAccountsRateLimited,
           sets: { exhaustedProviders, exhaustedConnections, transientRateLimitedProviders },
