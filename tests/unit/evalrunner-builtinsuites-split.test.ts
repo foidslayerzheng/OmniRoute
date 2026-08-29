@@ -1,7 +1,7 @@
 /**
  * Split-guard — evalRunner ↔ evalRunner/builtinSuites
  *
- * Guards the extraction of the 7 built-in golden-set suites (pure data) into
+ * Guards the extraction of the built-in evaluation suites (pure data) into
  * the leaf `src/lib/evals/evalRunner/builtinSuites.ts`. Characterizes the suite
  * data (ids, case counts, key cases) and proves the host still registers every
  * leaf suite at module load. DB-free by design: only getSuite(builtInId) is
@@ -19,6 +19,7 @@ import {
   safetySuite,
   instructionSuite,
   codexComparisonSuite,
+  jarvisCoreSuite,
   builtInSuites,
 } from "../../src/lib/evals/evalRunner/builtinSuites.ts";
 
@@ -30,7 +31,7 @@ describe("evalRunner/builtinSuites split-guard", () => {
     resetSuites();
   });
 
-  it("leaf exports the 7 built-in suites plus the aggregate array", () => {
+  it("leaf exports all built-in suites plus the aggregate array", () => {
     const named = [
       goldenSet,
       codingSuite,
@@ -39,6 +40,7 @@ describe("evalRunner/builtinSuites split-guard", () => {
       safetySuite,
       instructionSuite,
       codexComparisonSuite,
+      jarvisCoreSuite,
     ];
     for (const s of named) {
       assert.ok(s, "suite must be defined");
@@ -47,7 +49,7 @@ describe("evalRunner/builtinSuites split-guard", () => {
       assert.ok(Array.isArray(s.cases));
     }
     // Same references, same order — the host relies on this ordering for load-time registration.
-    assert.equal(builtInSuites.length, 7);
+    assert.equal(builtInSuites.length, 8);
     assert.deepEqual(builtInSuites, named);
   });
 
@@ -62,6 +64,7 @@ describe("evalRunner/builtinSuites split-guard", () => {
         ["safety-guardrails", 6],
         ["instruction-following", 5],
         ["codex-comparison", 8],
+        ["jarvis-core-v1", 24],
       ]
     );
   });
