@@ -9,12 +9,10 @@ test("cliToken.mjs pode ser importado sem erro", async () => {
   assert.equal(mod.CLI_TOKEN_HEADER, "x-omniroute-cli-token");
 });
 
-test("getCliToken retorna string de 32 chars ou string vazia", async () => {
+test("getCliToken returns a 32-char machine-derived token when node-machine-id is available", async () => {
   const { getCliToken } = await import("../../bin/cli/utils/cliToken.mjs");
   const token = await getCliToken();
-  assert.ok(typeof token === "string");
-  // Pode ser "" se node-machine-id falhar, ou 32 chars se funcionar.
-  assert.ok(token === "" || token.length === 32, `expected 0 or 32 chars, got ${token.length}`);
+  assert.match(token, /^[0-9a-f]{32}$/);
 });
 
 test("getCliToken retorna mesmo valor em chamadas repetidas (cache)", async () => {

@@ -8,7 +8,11 @@ let _cached = null;
 export async function getCliToken() {
   if (_cached !== null) return _cached;
   try {
-    const { machineIdSync } = await import("node-machine-id");
+    const mod = await import("node-machine-id");
+    const machineIdSync = mod.machineIdSync ?? mod.default?.machineIdSync;
+    if (typeof machineIdSync !== "function") {
+      throw new Error("node-machine-id machineIdSync export unavailable");
+    }
     const mid = machineIdSync();
     _cached = crypto
       .createHash("sha256")
