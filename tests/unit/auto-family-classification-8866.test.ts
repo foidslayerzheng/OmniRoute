@@ -48,3 +48,14 @@ test("#8866: a plain model is untouched by the family branch", async () => {
   assert.equal(state.isAutoRouting, false);
   assert.equal(state.spec?.family, undefined);
 });
+
+test("auto/best-free carries a mandatory free-tier spec", async () => {
+  const state = await resolveAutoRoutingState("auto/best-free");
+  assert.equal(state.recognizedBuiltInAuto, true);
+  assert.equal(state.variant, "cheap");
+  assert.equal(
+    state.spec?.tier,
+    "free",
+    "auto/best-free must remain hard-scoped to free models"
+  );
+});

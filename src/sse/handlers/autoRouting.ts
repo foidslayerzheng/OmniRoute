@@ -32,7 +32,11 @@ function classifyAutoModel(
   const recognizedBuiltInAuto =
     model === "auto" || Object.prototype.hasOwnProperty.call(AUTO_TEMPLATE_VARIANTS, model);
   if (Object.prototype.hasOwnProperty.call(AUTO_TEMPLATE_VARIANTS, model)) {
-    return { variant: AUTO_TEMPLATE_VARIANTS[model], recognizedBuiltInAuto: true };
+    return {
+      variant: AUTO_TEMPLATE_VARIANTS[model],
+      ...(model === "auto/best-free" ? { spec: { tier: "free" as const } } : {}),
+      recognizedBuiltInAuto: true,
+    };
   }
   if (!model.startsWith("auto/")) return { recognizedBuiltInAuto };
 
