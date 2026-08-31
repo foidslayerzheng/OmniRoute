@@ -14,6 +14,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HARNESS_DIR="$(mktemp -d)"
 trap 'rm -rf "$HARNESS_DIR"' EXIT
+RUNTIME_PATH=${PATH:?PATH is required for the offline runtime}
+RUNTIME_HOME=${HOME:?HOME is required for the offline runtime}
 
 echo "=== OFFLINE BROAD SHARD HARNESS ==="
 echo "Repo: $REPO_ROOT"
@@ -39,19 +41,11 @@ run_in_ns() {
   local a
   for a in "$@"; do cmd+="$(printf '%q ' "$a")"; done
   ( unshare -Urn env -i \
+      PATH="$RUNTIME_PATH" \
+      HOME="$RUNTIME_HOME" \
       DISABLE_SQLITE_AUTO_BACKUP=true \
       OFFLINE_HARNESS=1 \
       NODE_ENV=test \
-      OPENAI_API_KEY=REDACTED-NO-COST \
-      ANTHROPIC_API_KEY=REDACTED-NO-COST \
-      GEMINI_API_KEY=REDACTED-NO-COST \
-      GOOGLE_API_KEY=REDACTED-NO-COST \
-      DEEPSEEK_API_KEY=REDACTED-NO-COST \
-      GROQ_API_KEY=REDACTED-NO-COST \
-      XAI_API_KEY=REDACTED-NO-COST \
-      MISTRAL_API_KEY=REDACTED-NO-COST \
-      OPENROUTER_API_KEY=REDACTED-NO-COST \
-      TOGETHER_API_KEY=REDACTED-NO-COST \
       bash -c "$cmd" )
 }
 
@@ -62,31 +56,66 @@ echo ""
 echo "--- Running outbound network canary (inside dead-network sandbox) ---"
 CANARY_FAILED=false
 
-# Canary 1: TCP connection to a provider port must fail
-if run_in_ns bash -c 'timeout 3 bash -c "echo >/dev/tcp/api.openai.com/443" 2>/dev/null'; then
-  echo "CANARY FAILURE: TCP connection to api.openai.com:443 succeeded — network leaked!"
+# Canary 1: TCP to a literal external IP must fail.
+if run_in_ns timeout 3 bash -c 'echo >/dev/tcp/1.1.1.1/443' 2>/dev/null; then
+  echo "CANARY FAILURE: literal external TCP succeeded — network leaked!"
   CANARY_FAILED=true
+else
+  echo "CANARY literal-external-ip: BLOCKED"
 fi
 
-# Canary 2: HTTPS curl to provider must fail
+# Canary 2: external DNS resolution must fail.
+if run_in_ns timeout 3 getent hosts example.com >/dev/null 2>&1; then
+  echo "CANARY FAILURE: external DNS resolution succeeded — network leaked!"
+  CANARY_FAILED=true
+else
+  echo "CANARY external-dns: BLOCKED"
+fi
+
+# Canary 3: HTTPS to a provider hostname must fail.
 if run_in_ns curl -s --max-time 3 https://api.openai.com/v1/models >/dev/null 2>&1; then
   echo "CANARY FAILURE: HTTPS request to api.openai.com succeeded — network leaked!"
   CANARY_FAILED=true
+else
+  echo "CANARY provider-https: BLOCKED"
 fi
 
-# Canary 3: generic TCP to Google DNS (8.8.8.8:53) must fail
-if run_in_ns bash -c 'timeout 3 bash -c "echo >/dev/tcp/8.8.8.8/53" 2>/dev/null'; then
-  echo "CANARY FAILURE: TCP connection to 8.8.8.8:53 succeeded — network leaked!"
+# Canary 4: an independent UDP path must fail.
+if run_in_ns timeout 3 bash -c 'echo probe >/dev/udp/8.8.8.8/53' 2>/dev/null; then
+  echo "CANARY FAILURE: independent external UDP succeeded — network leaked!"
+  CANARY_FAILED=true
+else
+  echo "CANARY independent-udp: BLOCKED"
+fi
+
+# Canary 5: provider/API credential names with nonempty values must be absent.
+if run_in_ns sh -c 'env | grep -Eiq "(OPENAI|ANTHROPIC|GEMINI|GOOGLE|DEEPSEEK|GROQ|XAI|MISTRAL|OPENROUTER|TOGETHER|AZURE|AWS|BEDROCK|COHERE).*(KEY|TOKEN|SECRET|CREDENTIAL)="'; then
+  echo "CANARY FAILURE: provider credential variable exists in child environment!"
+  CANARY_FAILED=true
+else
+  echo "CANARY provider-credentials: ABSENT"
+fi
+
+# Canary 6: a normal local command must work in the same isolation.
+if run_in_ns sh -c 'test "$OFFLINE_HARNESS" = 1 && printf local-ok' >/dev/null; then
+  echo "CANARY local-command: PASS"
+else
+  echo "CANARY FAILURE: normal local command failed inside isolation!"
   CANARY_FAILED=true
 fi
 
 if [ "$CANARY_FAILED" = "false" ]; then
-​  echo "All canary checks passed — outbound network is blocked (dead sandbox confirmed.)"
+  echo "All canary checks passed — outbound network is blocked (dead sandbox confirmed.)"
 else
   echo ""
   echo "ABORT: Network canary succeeded. Cannot guarantee offline isolation."
   echo "No broad shards will run. Fix network isolation first."
   exit 1
+fi
+
+if [ "${OFFLINE_CANARY_ONLY:-0}" = "1" ]; then
+  echo "CANARY-ONLY COMPLETE — no shards started"
+  exit 0
 fi
 
 # ---------------------------------------------------------------
@@ -148,7 +177,7 @@ for shard in "${DETERMINISTIC_SHARDS[@]}"; do
 
   if [[ "$shard" == *.py ]]; then
     # Python test
-    if timeout 30 run_in_ns python3 "$shard" >/dev/null 2>&1; then
+    if run_in_ns timeout 30 python3 "$shard" >/dev/null 2>&1; then
       echo "PASS"
       PASSED=$((PASSED + 1))
     else
@@ -159,8 +188,8 @@ for shard in "${DETERMINISTIC_SHARDS[@]}"; do
     # Node.js test — run in isolation with network-blocked sandbox
     # Node must be launched INSIDE the namespace so none of its I/O leaks.
 
-    if timeout 60 run_in_ns \
-        bash -c "$HOME/.hermes/node/bin/node --import tsx/esm --import '$REPO_ROOT/open-sse/utils/setupPolyfill.ts' --test '$shard'" \
+    if run_in_ns timeout 60 \
+        "$HOME/.hermes/node/bin/node" --import tsx/esm --import "$REPO_ROOT/open-sse/utils/setupPolyfill.ts" --test "$shard" \
         >/dev/null 2>&1; then
       echo "PASS"
       PASSED=$((PASSED + 1))
@@ -185,11 +214,11 @@ echo "Failed:  $FAILED"
 echo "Skipped: $SKIPPED"
 
 if [ "$FAILED" -gt 0 ]; then
-​  echo ""
-​  echo "RESULT: FAIL — $FAILED shard(s) failed"
-​  exit 1
+  echo ""
+  echo "RESULT: FAIL — $FAILED shard(s) failed"
+  exit 1
 else
-​  echo ""
-​  echo "RESULT: PASS — all $PASSED deterministic shards passed"
-​  exit 0
+  echo ""
+  echo "RESULT: PASS — all $PASSED deterministic shards passed"
+  exit 0
 fi
