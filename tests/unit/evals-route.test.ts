@@ -96,6 +96,48 @@ test("evals GET returns suites, target options, api key metadata, and persisted 
   );
 });
 
+test("evals GET applies suiteId, status, since, and limit to recentRuns", async () => {
+  localDb.saveEvalRun({
+    suiteId: "suite-a",
+    suiteName: "Suite A",
+    target: { type: "model", id: "model-a", label: "Model A" },
+    summary: { total: 1, passed: 1, failed: 0, passRate: 100 },
+    results: [],
+    createdAt: "2026-05-01T00:00:00.000Z",
+  });
+  const latest = localDb.saveEvalRun({
+    suiteId: "suite-a",
+    suiteName: "Suite A",
+    target: { type: "model", id: "model-b", label: "Model B" },
+    summary: { total: 1, passed: 1, failed: 0, passRate: 100 },
+    results: [],
+    createdAt: "2026-05-03T00:00:00.000Z",
+  });
+  localDb.saveEvalRun({
+    suiteId: "suite-b",
+    suiteName: "Suite B",
+    target: { type: "model", id: "model-c", label: "Model C" },
+    summary: { total: 1, passed: 0, failed: 1, passRate: 0 },
+    results: [],
+    createdAt: "2026-05-04T00:00:00.000Z",
+  });
+
+  const response = await evalsRoute.GET(
+    new Request(
+      "http://localhost/api/evals?suiteId=suite-a&status=completed&since=2026-05-02T00%3A00%3A00.000Z&limit=1"
+    )
+  );
+  const payload = (await response.json()) as { recentRuns: Array<{ id: string }> };
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.recentRuns.map((run) => run.id), [latest.id]);
+
+  const unsupportedStatus = await evalsRoute.GET(
+    new Request("http://localhost/api/evals?status=running")
+  );
+  assert.deepEqual((await unsupportedStatus.json()).recentRuns, []);
+});
+
 test("evals GET exposes stored runs and aggregated pass rate inline", async () => {
   localDb.saveEvalRun({
     suiteId: "golden-set",
@@ -128,7 +170,7 @@ test("eval run resource returns persisted results and rejects cancellation of im
   const context = { params: Promise.resolve({ runId: run.id }) };
 
   const getResponse = await evalRunByIdRoute.GET(
-    new Request(`http://localhost/api/evals/${run.id}`),
+    new Request(`http://localhost/api/evals/runs/${run.id}`),
     context
   );
   assert.equal(getResponse.status, 200);
@@ -137,7 +179,7 @@ test("eval run resource returns persisted results and rejects cancellation of im
   assert.equal(payload.results.length, 1);
 
   const cancelResponse = await evalRunByIdRoute.POST(
-    new Request(`http://localhost/api/evals/${run.id}`, {
+    new Request(`http://localhost/api/evals/runs/${run.id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ op: "cancel" }),
@@ -147,6 +189,29 @@ test("eval run resource returns persisted results and rejects cancellation of im
   assert.equal(cancelResponse.status, 409);
   assert.deepEqual(await cancelResponse.json(), {
     error: { code: "eval_run_immutable", message: "Completed eval runs cannot be cancelled" },
+  });
+
+  const malformedResponse = await evalRunByIdRoute.POST(
+    new Request(`http://localhost/api/evals/runs/${run.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ op: "restart" }),
+    }),
+    context
+  );
+  assert.equal(malformedResponse.status, 400);
+  assert.deepEqual(await malformedResponse.json(), {
+    error: { code: "invalid_eval_run_operation", message: "Only the cancel operation is supported" },
+  });
+
+  const missingId = "missing-run";
+  const missingResponse = await evalRunByIdRoute.GET(
+    new Request(`http://localhost/api/evals/runs/${missingId}`),
+    { params: Promise.resolve({ runId: missingId }) }
+  );
+  assert.equal(missingResponse.status, 404);
+  assert.deepEqual(await missingResponse.json(), {
+    error: { code: "eval_run_not_found", message: "Eval run not found" },
   });
 });
 

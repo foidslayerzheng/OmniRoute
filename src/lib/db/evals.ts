@@ -500,6 +500,7 @@ export function listEvalRuns(
   options: {
     suiteId?: string;
     runGroupId?: string;
+    since?: string;
     limit?: number;
   } = {}
 ): PersistedEvalRun[] {
@@ -515,6 +516,11 @@ export function listEvalRuns(
   if (options.runGroupId) {
     conditions.push("run_group_id = ?");
     params.push(options.runGroupId);
+  }
+
+  if (options.since) {
+    conditions.push("created_at >= ?");
+    params.push(options.since);
   }
 
   const limit = Number.isFinite(Number(options.limit))

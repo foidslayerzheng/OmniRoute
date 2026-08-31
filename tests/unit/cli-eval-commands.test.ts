@@ -13,10 +13,25 @@ const RUN = {
   id: "run-001",
   suiteId: "suite-001",
   status: "completed",
-  model: "gpt-4o",
-  score: 0.87,
-  duration: 42000,
-  startedAt: "2026-05-14T10:00:00Z",
+  target: { type: "model", id: "gpt-4o", key: "model:gpt-4o", label: "Model: gpt-4o" },
+  summary: { total: 50, passed: 43, failed: 7, passRate: 86 },
+  avgLatencyMs: 840,
+  createdAt: "2026-05-14T10:00:00Z",
+};
+
+const RUN_2 = {
+  ...RUN,
+  id: "run-002",
+  target: { type: "combo", id: "fast", key: "combo:fast", label: "Combo: fast" },
+};
+
+const RUN_ENVELOPE = {
+  suiteId: "suite-001",
+  runGroupId: null,
+  runs: [RUN, RUN_2],
+  scorecard: { overallPassRate: 87 },
+  recentRuns: [RUN],
+  historyScorecard: { overallPassRate: 87 },
 };
 
 const SAMPLES = [
@@ -97,7 +112,7 @@ test("runEvalRun envia suiteId e model no body", async () => {
   globalThis.fetch = ((url: string, opts: any) => {
     capturedUrl = url;
     if (opts?.body) capturedBody = JSON.parse(opts.body);
-    return Promise.resolve(makeResp(RUN));
+    return Promise.resolve(makeResp(RUN_ENVELOPE));
   }) as any;
 
   const { runEvalRun } = await import("../../bin/cli/commands/eval.mjs");
@@ -113,6 +128,48 @@ test("runEvalRun envia suiteId e model no body", async () => {
   });
 });
 
+test("runEvalRun renders the creation envelope and does not poll completed runs with --watch", async () => {
+  let calls = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = ((_url: string) => {
+    calls += 1;
+    return Promise.resolve(makeResp(RUN_ENVELOPE));
+  }) as any;
+
+  try {
+    const { runEvalRun } = await import("../../bin/cli/commands/eval.mjs");
+    const out = await captureStdout(() =>
+      runEvalRun("suite-001", { model: "gpt-4o", watch: true }, makeCmd() as any)
+    );
+    assert.deepEqual(JSON.parse(out), RUN_ENVELOPE);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  assert.equal(calls, 1);
+});
+
+test("runEvalRun renders completed envelope runs with persisted target and summary fields in table mode", async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = ((_url: string) => Promise.resolve(makeResp(RUN_ENVELOPE))) as any;
+
+  try {
+    const { runEvalRun } = await import("../../bin/cli/commands/eval.mjs");
+    const out = await captureStdout(() =>
+      runEvalRun(
+        "suite-001",
+        { model: "gpt-4o" },
+        { optsWithGlobals: () => ({ output: "table", quiet: false }) } as any
+      )
+    );
+    assert.match(out, /Model: gpt-4o/);
+    assert.match(out, /86\.0%/);
+    assert.match(out, /Combo: fast/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test("runEvalRun propagates global transport options and uses one bounded creation attempt", async () => {
   let calls = 0;
   let capturedUrl = "";
@@ -122,7 +179,7 @@ test("runEvalRun propagates global transport options and uses one bounded creati
     calls += 1;
     capturedUrl = url;
     capturedOptions = options;
-    return Promise.resolve(makeResp(RUN));
+    return Promise.resolve(makeResp(RUN_ENVELOPE));
   }) as any;
 
   try {
@@ -153,23 +210,38 @@ test("runEvalRun propagates global transport options and uses one bounded creati
   assert.ok(capturedOptions.signal instanceof AbortSignal);
 });
 
-test("runEvalList envia filtros na query", async () => {
+test("runEvalList consumes recentRuns and propagates filters plus global transport options", async () => {
   let capturedUrl = "";
+  let capturedOptions: any = null;
   const origFetch = globalThis.fetch;
-  globalThis.fetch = ((url: string) => {
+  globalThis.fetch = ((url: string, options: any) => {
     capturedUrl = url;
-    return Promise.resolve(makeResp({ items: [RUN] }));
+    capturedOptions = options;
+    return Promise.resolve(makeResp({
+      suites: [],
+      recentRuns: [RUN],
+      scorecard: null,
+      targets: [],
+      apiKeys: [],
+    }));
   }) as any;
 
   const { runEvalList } = await import("../../bin/cli/commands/eval.mjs");
-  await captureStdout(() =>
-    runEvalList({ suite: "suite-001", status: "completed", limit: 25 }, makeCmd() as any)
+  const out = await captureStdout(() =>
+    runEvalList(
+      { suite: "suite-001", status: "completed", since: "2026-05-01T00:00:00Z", limit: 25 },
+      { optsWithGlobals: () => ({ output: "json", baseUrl: "https://evals.example.test" }) } as any
+    )
   );
 
   globalThis.fetch = origFetch;
   assert.ok(capturedUrl.includes("suiteId=suite-001"));
   assert.ok(capturedUrl.includes("status=completed"));
+  assert.ok(capturedUrl.includes("since=2026-05-01T00%3A00%3A00Z"));
   assert.ok(capturedUrl.includes("limit=25"));
+  assert.equal(capturedUrl.startsWith("https://evals.example.test/"), true);
+  assert.equal(capturedOptions.method, "GET");
+  assert.deepEqual(JSON.parse(out), [RUN]);
 });
 
 test("runEvalGet busca run por id", async () => {
@@ -219,22 +291,39 @@ test("runEvalResults com --failed envia filter=failed na query", async () => {
   assert.ok(capturedUrl.includes("filter=failed"));
 });
 
-test("runEvalCancel com --yes envia op: cancel", async () => {
+test("runEvalCancel surfaces immutable 409 as a structured unsupported result", async () => {
   let capturedBody: any = null;
+  let capturedUrl = "";
   const origFetch = globalThis.fetch;
-  globalThis.fetch = ((_url: string, opts: any) => {
+  const originalExitCode = process.exitCode;
+  globalThis.fetch = ((url: string, opts: any) => {
+    capturedUrl = url;
     if (opts?.body) capturedBody = JSON.parse(opts.body);
-    return Promise.resolve(makeResp({}));
+    return Promise.resolve(
+      makeResp(
+        { error: { code: "eval_run_immutable", message: "Completed eval runs cannot be cancelled" } },
+        409
+      )
+    );
   }) as any;
 
-  const out = await captureStdout(async () => {
-    const { runEvalCancel } = await import("../../bin/cli/commands/eval.mjs");
-    await runEvalCancel("run-001", { yes: true }, makeCmd() as any);
-  });
+  let out = "";
+  try {
+    out = await captureStdout(async () => {
+      const { runEvalCancel } = await import("../../bin/cli/commands/eval.mjs");
+      await runEvalCancel("run-001", { yes: true }, makeCmd() as any);
+    });
+  } finally {
+    globalThis.fetch = origFetch;
+    process.exitCode = originalExitCode;
+  }
 
-  globalThis.fetch = origFetch;
+  assert.ok(capturedUrl.includes("/api/evals/runs/run-001"));
   assert.equal(capturedBody.op, "cancel");
-  assert.ok(out.includes("Cancelled"));
+  assert.deepEqual(JSON.parse(out), {
+    error: { code: "eval_run_immutable", message: "Completed eval runs cannot be cancelled" },
+  });
+  assert.equal(out.includes("Cancelled"), false);
 });
 
 test("runEvalScorecard renderiza scorecard em modo table", async () => {

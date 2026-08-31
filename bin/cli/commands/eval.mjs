@@ -31,14 +31,18 @@ const runSchema = [
   { key: "id", header: "Run ID", width: 22 },
   { key: "suiteId", header: "Suite", width: 18 },
   { key: "status", header: "Status", width: 12 },
-  { key: "model", header: "Model", width: 25 },
-  { key: "score", header: "Score", formatter: (v) => (v != null ? v.toFixed(3) : "-") },
+  { key: "target", header: "Target", width: 25, formatter: (v) => v?.label ?? v?.key ?? "-" },
   {
-    key: "duration",
-    header: "Duration",
-    formatter: (v) => (v != null ? `${(v / 1000).toFixed(1)}s` : "-"),
+    key: "summary",
+    header: "Pass rate",
+    formatter: (v) => (v?.passRate != null ? `${Number(v.passRate).toFixed(1)}%` : "-"),
   },
-  { key: "startedAt", header: "Started", formatter: fmtTs },
+  {
+    key: "avgLatencyMs",
+    header: "Avg latency",
+    formatter: (v) => (v != null ? `${Number(v).toFixed(0)}ms` : "-"),
+  },
+  { key: "createdAt", header: "Created", formatter: fmtTs },
 ];
 
 const sampleSchema = [
@@ -153,36 +157,44 @@ export async function runEvalRun(suiteId, opts, cmd) {
     process.stderr.write(`Error: ${res.status}\n`);
     process.exit(1);
   }
-  const run = await res.json();
-  emit(run, globalOpts, runSchema);
+  const envelope = await res.json();
+  const runs = Array.isArray(envelope?.runs) ? envelope.runs : [];
+  const structuredOutput = ["json", "jsonl"].includes(globalOpts.output);
+  emit(structuredOutput ? envelope : runs, globalOpts, runSchema);
   if (opts.watch) {
-    if (process.stdout.isTTY) {
+    const pendingRuns = runs.filter(
+      (run) => run?.id && !["completed", "failed", "cancelled"].includes(run.status)
+    );
+    if (pendingRuns.length === 0) return;
+
+    if (process.stdout.isTTY && pendingRuns.length === 1) {
       const { startEvalWatchTui } = await import("../tui/EvalWatch.jsx");
       await startEvalWatchTui({
-        runId: run.id,
-        suiteId: opts.suite,
+        runId: pendingRuns[0].id,
+        suiteId,
         baseUrl: globalOpts.baseUrl ?? "http://localhost:20128",
         apiKey: globalOpts.apiKey ?? process.env.OMNIROUTE_API_KEY,
       });
     } else {
       process.stderr.write("\nWatching run... (Ctrl+C to detach)\n");
-      await watchRun(run.id, globalOpts);
+      await Promise.all(pendingRuns.map((run) => watchRun(run.id, globalOpts)));
     }
   }
 }
 
 export async function runEvalList(opts, cmd) {
+  const globalOpts = cmd.optsWithGlobals();
   const params = new URLSearchParams({ limit: String(opts.limit ?? 50) });
   if (opts.suite) params.set("suiteId", opts.suite);
   if (opts.status) params.set("status", opts.status);
   if (opts.since) params.set("since", opts.since);
-  const res = await apiFetch(`/api/evals?${params}`);
+  const res = await apiFetch(`/api/evals?${params}`, globalOpts);
   if (!res.ok) {
     process.stderr.write(`Error: ${res.status}\n`);
     process.exit(1);
   }
   const data = await res.json();
-  emit(data.items ?? data, cmd.optsWithGlobals(), runSchema);
+  emit(data.recentRuns ?? [], globalOpts, runSchema);
 }
 
 export async function runEvalGet(id, opts, cmd) {
@@ -211,15 +223,18 @@ export async function runEvalCancel(id, opts, cmd) {
     const ok = await confirm(`Cancel run ${id}?`);
     if (!ok) return;
   }
+  const globalOpts = cmd.optsWithGlobals();
   const res = await apiFetch(`/api/evals/runs/${id}`, {
-    ...cmd.optsWithGlobals(),
+    ...globalOpts,
     method: "POST",
     body: { op: "cancel" },
     retry: false,
   });
   if (!res.ok) {
-    process.stderr.write(`Error: ${res.status}\n`);
-    process.exit(1);
+    const error = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
+    emit(error, globalOpts);
+    process.exitCode = 1;
+    return;
   }
   process.stdout.write("Cancelled\n");
 }

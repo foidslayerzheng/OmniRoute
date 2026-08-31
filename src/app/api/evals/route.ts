@@ -40,6 +40,13 @@ export async function GET(request: Request) {
   if (authError) return authError;
 
   try {
+    const url = new URL(request.url);
+    const suiteId = url.searchParams.get("suiteId")?.trim() || undefined;
+    const status = url.searchParams.get("status")?.trim() || undefined;
+    const rawSince = url.searchParams.get("since")?.trim();
+    const since = rawSince && !Number.isNaN(Date.parse(rawSince)) ? rawSince : undefined;
+    const rawLimit = Number.parseInt(url.searchParams.get("limit") || "20", 10);
+    const limit = Number.isFinite(rawLimit) ? Math.min(200, Math.max(1, rawLimit)) : 20;
     const [suites, persistedRuns, scorecard, targets, apiKeys] = await Promise.all([
       Promise.resolve(listSuites()),
       Promise.resolve(listEvalRuns({ limit: 1000 })),
@@ -47,10 +54,12 @@ export async function GET(request: Request) {
       buildEvalTargetOptions(),
       getApiKeys(),
     ]);
+    const recentRuns =
+      status && status !== "completed" ? [] : listEvalRuns({ suiteId, since, limit });
 
     return NextResponse.json({
       suites,
-      recentRuns: persistedRuns.slice(0, 20),
+      recentRuns,
       scorecard,
       empiricalScorecard: createEmpiricalDiagnosticsScorecard(persistedRuns),
       targets,
