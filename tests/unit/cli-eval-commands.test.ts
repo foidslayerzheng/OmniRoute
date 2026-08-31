@@ -105,6 +105,55 @@ test("runEvalSuitesGet busca suite por id", async () => {
   assert.equal(parsed.id, "suite-001");
 });
 
+test("eval suite commands propagate global transport options and creation disables retries", async () => {
+  const calls: Array<{ url: string; options: any }> = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = ((url: string, options: any) => {
+    calls.push({ url, options });
+    if (options?.method === "POST") {
+      return Promise.reject(Object.assign(new Error("synthetic reset"), { code: "ECONNRESET" }));
+    }
+    return Promise.resolve(makeResp(url.includes("suite-001") ? SUITE : { items: [SUITE] }));
+  }) as any;
+  const globals = {
+    output: "json",
+    quiet: true,
+    baseUrl: "http://eval-host.example:4242",
+    apiKey: "synthetic-test-key",
+    timeout: 4321,
+    context: "offline-review",
+  };
+  const cmd = { optsWithGlobals: () => globals } as any;
+  const { runEvalSuitesList, runEvalSuitesGet, runEvalSuitesCreate } = await import(
+    "../../bin/cli/commands/eval.mjs"
+  );
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "eval-suite-cli-")), "suite.json");
+  fs.writeFileSync(file, JSON.stringify({ name: "Synthetic", cases: [] }));
+
+  try {
+    await captureStdout(() => runEvalSuitesList({}, cmd));
+    await captureStdout(() => runEvalSuitesGet("suite-001", {}, cmd));
+    await assert.rejects(
+      captureStdout(() => runEvalSuitesCreate({ file }, cmd)),
+      /synthetic reset/
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  }
+
+  assert.equal(calls.length, 3);
+  for (const call of calls) {
+    assert.match(call.url, /^http:\/\/eval-host\.example:4242\/api\/evals\/suites/);
+    assert.equal(call.options.headers.get("authorization"), "Bearer synthetic-test-key");
+    assert.ok(call.options.signal instanceof AbortSignal);
+  }
+  assert.equal(calls[2].options.method, "POST");
+});
+
 test("runEvalRun envia suiteId e model no body", async () => {
   let capturedBody: any = null;
   let capturedUrl = "";

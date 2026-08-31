@@ -138,6 +138,35 @@ test("evals GET applies suiteId, status, since, and limit to recentRuns", async 
   assert.deepEqual((await unsupportedStatus.json()).recentRuns, []);
 });
 
+test("evals POST with fixture outputs uses the persisted creation envelope", async () => {
+  const response = await evalsRoute.POST(
+    new Request("http://localhost/api/evals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        suiteId: "golden-set",
+        outputs: {
+          "truthful-answer": "Paris is the capital of France.",
+        },
+      }),
+    })
+  );
+
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as {
+    suiteId: string;
+    runGroupId: string | null;
+    runs: Array<{ id: string; status: string }>;
+    recentRuns: Array<{ id: string }>;
+  };
+  assert.equal(payload.suiteId, "golden-set");
+  assert.equal(payload.runGroupId, null);
+  assert.equal(payload.runs.length, 1);
+  assert.equal(payload.runs[0].status, "completed");
+  assert.ok(payload.runs[0].id);
+  assert.equal(payload.recentRuns.some((run) => run.id === payload.runs[0].id), true);
+});
+
 test("evals GET exposes stored runs and aggregated pass rate inline", async () => {
   localDb.saveEvalRun({
     suiteId: "golden-set",

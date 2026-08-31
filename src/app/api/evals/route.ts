@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
-import { getEvalScorecard, listEvalRuns, getApiKeys } from "@/lib/localDb";
+import { getEvalScorecard, listEvalRuns, getApiKeys, saveEvalRun } from "@/lib/localDb";
 import { listSuites, runSuite, createScorecard } from "@/lib/evals/evalRunner";
 import {
   buildEmpiricalShadowScorecard,
@@ -103,7 +103,23 @@ export async function POST(request: Request) {
 
     if (outputs && Object.keys(outputs).length > 0) {
       const result = runSuite(suiteId, outputs, {}, tag);
-      return NextResponse.json(result);
+      const run = saveEvalRun({
+        suiteId: result.suiteId,
+        suiteName: result.suiteName,
+        target: { type: "suite-default", id: null, label: "Suite default" },
+        apiKeyId,
+        summary: result.summary,
+        results: result.results,
+        outputs,
+      });
+      return NextResponse.json({
+        suiteId,
+        runGroupId: null,
+        runs: [run],
+        scorecard: createScorecard([result]),
+        recentRuns: listEvalRuns({ limit: 20 }),
+        historyScorecard: getEvalScorecard({ limit: 50 }),
+      });
     }
 
     const targetsToRun = [target || { type: "suite-default" as const, id: null }];

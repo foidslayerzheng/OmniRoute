@@ -100,7 +100,7 @@ function renderScorecard(data) {
 }
 
 export async function runEvalSuitesList(opts, cmd) {
-  const res = await apiFetch("/api/evals/suites");
+  const res = await apiFetch("/api/evals/suites", cmd.optsWithGlobals());
   if (!res.ok) {
     process.stderr.write(`Error: ${res.status}\n`);
     process.exit(1);
@@ -110,7 +110,7 @@ export async function runEvalSuitesList(opts, cmd) {
 }
 
 export async function runEvalSuitesGet(id, opts, cmd) {
-  const res = await apiFetch(`/api/evals/suites/${id}`);
+  const res = await apiFetch(`/api/evals/suites/${id}`, cmd.optsWithGlobals());
   if (!res.ok) {
     process.stderr.write(`Not found: ${id}\n`);
     process.exit(1);
@@ -124,7 +124,12 @@ export async function runEvalSuitesCreate(opts, cmd) {
     process.exit(2);
   }
   const body = JSON.parse(readFileSync(opts.file, "utf8"));
-  const res = await apiFetch("/api/evals/suites", { method: "POST", body });
+  const res = await apiFetch("/api/evals/suites", {
+    ...cmd.optsWithGlobals(),
+    method: "POST",
+    body,
+    retry: false,
+  });
   if (!res.ok) {
     process.stderr.write(`Error: ${res.status}\n`);
     process.exit(1);
