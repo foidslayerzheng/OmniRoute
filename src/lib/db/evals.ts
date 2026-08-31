@@ -85,7 +85,14 @@ interface StatementLike<TRow = unknown> {
 
 interface DbLike {
   prepare: <TRow = unknown>(sql: string) => StatementLike<TRow>;
+  transaction: <T>(fn: (...args: unknown[]) => T) => (...args: unknown[]) => T;
 }
+
+export type EvalIdempotencyClaim =
+  | { kind: "claimed" }
+  | { kind: "replay"; response: Record<string, unknown> }
+  | { kind: "conflict" }
+  | { kind: "pending" };
 
 function hasColumn(db: DbLike, table: string, column: string): boolean {
   const rows = db.prepare<{ name?: string }>(`PRAGMA table_info(${table})`).all();
@@ -494,6 +501,65 @@ export function saveEvalRun(input: {
     outputs: input.outputs || {},
     createdAt,
   };
+}
+
+export function claimEvalIdempotencyKey(
+  key: string,
+  requestFingerprint: string
+): EvalIdempotencyClaim {
+  const db = getDbInstance() as unknown as DbLike;
+  const normalizedKey = key.trim();
+  const claim = db.transaction((): EvalIdempotencyClaim => {
+    const existing = db
+      .prepare<Record<string, unknown>>(
+        "SELECT request_fingerprint, state, response_json FROM eval_run_idempotency WHERE idempotency_key = ?"
+      )
+      .get(normalizedKey);
+    if (existing) {
+      if (existing.request_fingerprint !== requestFingerprint) return { kind: "conflict" };
+      if (existing.state !== "completed") return { kind: "pending" };
+      const raw = existing.response_json;
+      if (typeof raw !== "string") return { kind: "pending" };
+      try {
+        const response = JSON.parse(raw);
+        return response && typeof response === "object" && !Array.isArray(response)
+          ? { kind: "replay", response: response as Record<string, unknown> }
+          : { kind: "pending" };
+      } catch {
+        return { kind: "pending" };
+      }
+    }
+    db.prepare(
+      `INSERT INTO eval_run_idempotency
+        (idempotency_key, request_fingerprint, state, response_json, created_at, completed_at)
+       VALUES (?, ?, 'pending', NULL, ?, NULL)`
+    ).run(normalizedKey, requestFingerprint, new Date().toISOString());
+    return { kind: "claimed" };
+  });
+  return claim();
+}
+
+export function completeEvalIdempotencyKey(
+  key: string,
+  requestFingerprint: string,
+  response: Record<string, unknown>
+): void {
+  const db = getDbInstance() as unknown as DbLike;
+  const result = db
+    .prepare(
+      `UPDATE eval_run_idempotency
+       SET state = 'completed', response_json = ?, completed_at = ?
+       WHERE idempotency_key = ? AND request_fingerprint = ? AND state = 'pending'`
+    )
+    .run(JSON.stringify(response), new Date().toISOString(), key.trim(), requestFingerprint);
+  if (result.changes !== 1) throw new Error("Eval idempotency claim was not completed");
+}
+
+export function releaseEvalIdempotencyKey(key: string, requestFingerprint: string): void {
+  const db = getDbInstance() as unknown as DbLike;
+  db.prepare(
+    "DELETE FROM eval_run_idempotency WHERE idempotency_key = ? AND request_fingerprint = ? AND state = 'pending'"
+  ).run(key.trim(), requestFingerprint);
 }
 
 export function listEvalRuns(

@@ -167,6 +167,70 @@ test("evals POST with fixture outputs uses the persisted creation envelope", asy
   assert.equal(payload.recentRuns.some((run) => run.id === payload.runs[0].id), true);
 });
 
+test("evals POST replays an identical Idempotency-Key without creating another run", async () => {
+  const request = () =>
+    new Request("http://localhost/api/evals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "eval-replay-1" },
+      body: JSON.stringify({
+        suiteId: "golden-set",
+        outputs: { "truthful-answer": "Paris is the capital of France." },
+      }),
+    });
+
+  const first = await evalsRoute.POST(request());
+  const second = await evalsRoute.POST(request());
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  const firstPayload = (await first.json()) as { runs: Array<{ id: string }> };
+  const secondPayload = (await second.json()) as { runs: Array<{ id: string }> };
+  assert.equal(second.headers.get("Idempotency-Replayed"), "true");
+  assert.deepEqual(secondPayload, firstPayload);
+  assert.equal(localDb.listEvalRuns({ limit: 20 }).length, 1);
+});
+
+test("evals POST rejects reuse of an Idempotency-Key with a different request", async () => {
+  const post = (answer: string) =>
+    evalsRoute.POST(
+      new Request("http://localhost/api/evals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": "eval-conflict-1" },
+        body: JSON.stringify({ suiteId: "golden-set", outputs: { "truthful-answer": answer } }),
+      })
+    );
+
+  assert.equal((await post("Paris is the capital of France.")).status, 200);
+  const conflict = await post("A different answer");
+  assert.equal(conflict.status, 409);
+  assert.deepEqual(await conflict.json(), {
+    error: {
+      code: "idempotency_key_conflict",
+      message: "Idempotency-Key was already used for a different eval request",
+    },
+  });
+  assert.equal(localDb.listEvalRuns({ limit: 20 }).length, 1);
+});
+
+test("concurrent identical eval POSTs create exactly one persisted run", async () => {
+  const request = () =>
+    new Request("http://localhost/api/evals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "eval-concurrent-1" },
+      body: JSON.stringify({
+        suiteId: "golden-set",
+        outputs: { "truthful-answer": "Paris is the capital of France." },
+      }),
+    });
+
+  const [left, right] = await Promise.all([evalsRoute.POST(request()), evalsRoute.POST(request())]);
+  assert.deepEqual([left.status, right.status].sort(), [200, 200]);
+  const [leftPayload, rightPayload] = (await Promise.all([left.json(), right.json()])) as Array<{
+    runs: Array<{ id: string }>;
+  }>;
+  assert.equal(leftPayload.runs[0].id, rightPayload.runs[0].id);
+  assert.equal(localDb.listEvalRuns({ limit: 20 }).length, 1);
+});
+
 test("evals GET exposes stored runs and aggregated pass rate inline", async () => {
   localDb.saveEvalRun({
     suiteId: "golden-set",

@@ -122,6 +122,9 @@ export {
   saveCustomEvalSuite,
   deleteCustomEvalSuite,
   serializeEvalTargetKey,
+  claimEvalIdempotencyKey,
+  completeEvalIdempotencyKey,
+  releaseEvalIdempotencyKey,
 } from "./db/evals";
 
 export type {

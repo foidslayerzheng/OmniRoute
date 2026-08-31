@@ -1,6 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
-import { getEvalScorecard, listEvalRuns, getApiKeys, saveEvalRun } from "@/lib/localDb";
+import {
+  claimEvalIdempotencyKey,
+  completeEvalIdempotencyKey,
+  getEvalScorecard,
+  listEvalRuns,
+  getApiKeys,
+  releaseEvalIdempotencyKey,
+  saveEvalRun,
+} from "@/lib/localDb";
 import { listSuites, runSuite, createScorecard } from "@/lib/evals/evalRunner";
 import {
   buildEmpiricalShadowScorecard,
@@ -93,6 +101,7 @@ export async function POST(request: Request) {
     );
   }
 
+  let idempotencyClaim: { key: string; fingerprint: string } | null = null;
   try {
     const validation = validateBody(evalRunSuiteSchema, rawBody);
     if (isValidationFailure(validation)) {
@@ -100,6 +109,42 @@ export async function POST(request: Request) {
     }
 
     const { suiteId, outputs, target, compareTarget, apiKeyId, tag } = validation.data;
+    const idempotencyKey = request.headers.get("Idempotency-Key")?.trim() || null;
+    if (idempotencyKey) {
+      if (idempotencyKey.length > 255) {
+        return NextResponse.json(
+          { error: { code: "invalid_idempotency_key", message: "Idempotency-Key is too long" } },
+          { status: 400 }
+        );
+      }
+      const fingerprint = createHash("sha256")
+        .update(JSON.stringify(validation.data))
+        .digest("hex");
+      const claim = claimEvalIdempotencyKey(idempotencyKey, fingerprint);
+      if (claim.kind === "conflict") {
+        return NextResponse.json(
+          {
+            error: {
+              code: "idempotency_key_conflict",
+              message: "Idempotency-Key was already used for a different eval request",
+            },
+          },
+          { status: 409 }
+        );
+      }
+      if (claim.kind === "pending") {
+        return NextResponse.json(
+          { error: { code: "idempotency_request_in_progress", message: "Eval request is in progress" } },
+          { status: 409 }
+        );
+      }
+      if (claim.kind === "replay") {
+        return NextResponse.json(claim.response, {
+          headers: { "Idempotency-Replayed": "true" },
+        });
+      }
+      idempotencyClaim = { key: idempotencyKey, fingerprint };
+    }
 
     if (outputs && Object.keys(outputs).length > 0) {
       const result = runSuite(suiteId, outputs, {}, tag);
@@ -112,14 +157,22 @@ export async function POST(request: Request) {
         results: result.results,
         outputs,
       });
-      return NextResponse.json({
+      const responseBody = {
         suiteId,
         runGroupId: null,
         runs: [run],
         scorecard: createScorecard([result]),
         recentRuns: listEvalRuns({ limit: 20 }),
         historyScorecard: getEvalScorecard({ limit: 50 }),
-      });
+      };
+      if (idempotencyClaim) {
+        completeEvalIdempotencyKey(
+          idempotencyClaim.key,
+          idempotencyClaim.fingerprint,
+          responseBody
+        );
+      }
+      return NextResponse.json(responseBody);
     }
 
     const targetsToRun = [target || { type: "suite-default" as const, id: null }];
@@ -152,15 +205,22 @@ export async function POST(request: Request) {
           )
         : null;
 
-    return NextResponse.json({
+    const responseBody = {
       suiteId,
       runGroupId,
       runs,
       scorecard,
       recentRuns: listEvalRuns({ limit: 20 }),
       historyScorecard: getEvalScorecard({ limit: 50 }),
-    });
+    };
+    if (idempotencyClaim) {
+      completeEvalIdempotencyKey(idempotencyClaim.key, idempotencyClaim.fingerprint, responseBody);
+    }
+    return NextResponse.json(responseBody);
   } catch (error: unknown) {
+    if (idempotencyClaim) {
+      releaseEvalIdempotencyKey(idempotencyClaim.key, idempotencyClaim.fingerprint);
+    }
     return NextResponse.json({ error: sanitizeErrorMessage(error) }, { status: 500 });
   }
 }
