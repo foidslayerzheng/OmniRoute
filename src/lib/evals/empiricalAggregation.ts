@@ -260,6 +260,7 @@ export function buildEmpiricalShadowScorecard(
       reasons.push("insufficient_deterministic_eval_samples");
     }
     if (evidence.deterministicEval.passRate === null) reasons.push("unknown_pass_rate");
+    if (evidence.deterministicEval.passCount === 0) reasons.push("no_deterministic_eval_passes");
     return {
       model: evidence.model,
       taskClass: evidence.taskClass,

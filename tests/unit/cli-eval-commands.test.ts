@@ -107,9 +107,10 @@ test("runEvalRun envia suiteId e model no body", async () => {
 
   globalThis.fetch = origFetch;
   assert.ok(capturedUrl.includes("/api/evals"));
-  assert.equal(capturedBody.suiteId, "suite-001");
-  assert.equal(capturedBody.model, "gpt-4o");
-  assert.equal(capturedBody.concurrency, 4);
+  assert.deepEqual(capturedBody, {
+    suiteId: "suite-001",
+    target: { type: "model", id: "gpt-4o" },
+  });
 });
 
 test("runEvalList envia filtros na query", async () => {

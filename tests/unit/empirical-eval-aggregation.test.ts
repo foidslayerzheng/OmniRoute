@@ -153,6 +153,15 @@ test("orders groups by model then classified task with unclassified last", () =>
   assert.deepEqual(groups.map(({ model, taskClass }) => [model, taskClass]), [["model-a", "coding"], ["model-a", null], ["model-z", null]]);
 });
 
+test("shadow scorecard rejects five deterministic failures", () => {
+  const records = Array.from({ length: 5 }, (_, index) =>
+    result({ caseId: `failed-${index}`, passed: false, telemetry: { tags: ["coding"] } }),
+  );
+  const [scorecard] = buildEmpiricalShadowScorecard([run({ results: records })]);
+  assert.equal(scorecard.eligibleForFutureEmpiricalRouting, false);
+  assert.ok(scorecard.reasons.includes("no_deterministic_eval_passes"));
+});
+
 test("shadow scorecard uses a five-sample diagnostic guard only", () => {
   assert.equal(MIN_EMPIRICAL_EVAL_SAMPLES, 5);
   const records = Array.from({ length: 5 }, (_, index) => result({ caseId: `c${index}`, telemetry: { tags: ["coding"] } }));
