@@ -55,6 +55,7 @@ export interface EvalRunSummary {
 
 export interface PersistedEvalRun {
   id: string;
+  status: "completed";
   runGroupId: string | null;
   suiteId: string;
   suiteName: string;
@@ -357,6 +358,7 @@ function toPersistedEvalRun(row: unknown): PersistedEvalRun | null {
 
   return {
     id: typeof camel.id === "string" ? camel.id : "",
+    status: "completed",
     runGroupId:
       typeof camel.runGroupId === "string" && camel.runGroupId.trim().length > 0
         ? camel.runGroupId
@@ -475,6 +477,7 @@ export function saveEvalRun(input: {
 
   return {
     id,
+    status: "completed",
     runGroupId: input.runGroupId || null,
     suiteId: input.suiteId,
     suiteName: input.suiteName,
@@ -528,6 +531,13 @@ export function listEvalRuns(
   return rows
     .map((row) => toPersistedEvalRun(row))
     .filter((row): row is PersistedEvalRun => row !== null);
+}
+
+export function getEvalRun(id: string): PersistedEvalRun | null {
+  const normalizedId = id.trim();
+  if (!normalizedId) return null;
+  const db = getDbInstance() as unknown as DbLike;
+  return toPersistedEvalRun(db.prepare("SELECT * FROM eval_runs WHERE id = ?").get(normalizedId));
 }
 
 export function listModelEvalRunsForRouting(options: EvalRoutingRunQuery): PersistedEvalRun[] {

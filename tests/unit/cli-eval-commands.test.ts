@@ -113,6 +113,46 @@ test("runEvalRun envia suiteId e model no body", async () => {
   });
 });
 
+test("runEvalRun propagates global transport options and uses one bounded creation attempt", async () => {
+  let calls = 0;
+  let capturedUrl = "";
+  let capturedOptions: any = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = ((url: string, options: any) => {
+    calls += 1;
+    capturedUrl = url;
+    capturedOptions = options;
+    return Promise.resolve(makeResp(RUN));
+  }) as any;
+
+  try {
+    const { runEvalRun } = await import("../../bin/cli/commands/eval.mjs");
+    await captureStdout(() =>
+      runEvalRun(
+        "suite-001",
+        { model: "gpt-4o" },
+        {
+          optsWithGlobals: () => ({
+            output: "json",
+            baseUrl: "https://evals.example.test/root/",
+            apiKey: "eval-secret",
+            timeout: 17,
+            idempotencyKey: "eval-create-001",
+          }),
+        } as any
+      )
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  assert.equal(calls, 1);
+  assert.equal(capturedUrl, "https://evals.example.test/root/api/evals");
+  assert.equal(capturedOptions.headers.get("authorization"), "Bearer eval-secret");
+  assert.equal(capturedOptions.headers.get("idempotency-key"), "eval-create-001");
+  assert.ok(capturedOptions.signal instanceof AbortSignal);
+});
+
 test("runEvalList envia filtros na query", async () => {
   let capturedUrl = "";
   const origFetch = globalThis.fetch;
@@ -144,7 +184,7 @@ test("runEvalGet busca run por id", async () => {
   const out = await captureStdout(() => runEvalGet("run-001", {}, makeCmd() as any));
 
   globalThis.fetch = origFetch;
-  assert.ok(capturedUrl.includes("/api/evals/run-001"));
+  assert.ok(capturedUrl.includes("/api/evals/runs/run-001"));
   const parsed = JSON.parse(out);
   assert.equal(parsed.id, "run-001");
 });

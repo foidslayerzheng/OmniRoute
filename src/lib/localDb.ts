@@ -115,6 +115,7 @@ export {
   // Evals
   saveEvalRun,
   listEvalRuns,
+  getEvalRun,
   getEvalScorecard,
   listCustomEvalSuites,
   getCustomEvalSuite,

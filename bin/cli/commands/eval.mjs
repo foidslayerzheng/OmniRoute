@@ -61,7 +61,7 @@ async function watchRun(runId, globalOpts) {
   let lastStatus = "";
   while (true) {
     await sleep(3000);
-    const res = await apiFetch(`/api/evals/${runId}`);
+    const res = await apiFetch(`/api/evals/runs/${runId}`, globalOpts);
     if (!res.ok) continue;
     const r = await res.json();
     if (r.status !== lastStatus) {
@@ -143,7 +143,12 @@ export function buildEvalRunBody(suiteId, opts = {}) {
 export async function runEvalRun(suiteId, opts, cmd) {
   const globalOpts = cmd.optsWithGlobals();
   const body = buildEvalRunBody(suiteId, opts);
-  const res = await apiFetch("/api/evals", { method: "POST", body });
+  const res = await apiFetch("/api/evals", {
+    ...globalOpts,
+    method: "POST",
+    body,
+    retry: false,
+  });
   if (!res.ok) {
     process.stderr.write(`Error: ${res.status}\n`);
     process.exit(1);
@@ -181,7 +186,7 @@ export async function runEvalList(opts, cmd) {
 }
 
 export async function runEvalGet(id, opts, cmd) {
-  const res = await apiFetch(`/api/evals/${id}`);
+  const res = await apiFetch(`/api/evals/runs/${id}`, cmd.optsWithGlobals());
   if (!res.ok) {
     process.stderr.write(`Not found: ${id}\n`);
     process.exit(1);
@@ -192,7 +197,7 @@ export async function runEvalGet(id, opts, cmd) {
 export async function runEvalResults(id, opts, cmd) {
   const params = new URLSearchParams();
   if (opts.failed) params.set("filter", "failed");
-  const res = await apiFetch(`/api/evals/${id}?${params}`);
+  const res = await apiFetch(`/api/evals/runs/${id}?${params}`, cmd.optsWithGlobals());
   if (!res.ok) {
     process.stderr.write(`Not found: ${id}\n`);
     process.exit(1);
@@ -206,7 +211,12 @@ export async function runEvalCancel(id, opts, cmd) {
     const ok = await confirm(`Cancel run ${id}?`);
     if (!ok) return;
   }
-  const res = await apiFetch(`/api/evals/${id}`, { method: "POST", body: { op: "cancel" } });
+  const res = await apiFetch(`/api/evals/runs/${id}`, {
+    ...cmd.optsWithGlobals(),
+    method: "POST",
+    body: { op: "cancel" },
+    retry: false,
+  });
   if (!res.ok) {
     process.stderr.write(`Error: ${res.status}\n`);
     process.exit(1);
@@ -215,7 +225,7 @@ export async function runEvalCancel(id, opts, cmd) {
 }
 
 export async function runEvalScorecard(id, opts, cmd) {
-  const res = await apiFetch(`/api/evals/${id}?scorecard=true`);
+  const res = await apiFetch(`/api/evals/runs/${id}?scorecard=true`, cmd.optsWithGlobals());
   if (!res.ok) {
     process.stderr.write(`Not found: ${id}\n`);
     process.exit(1);

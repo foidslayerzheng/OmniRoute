@@ -19,6 +19,7 @@ interface EvalsRoutePayload {
 const core = await import("../../src/lib/db/core.ts");
 const localDb = await import("../../src/lib/localDb.ts");
 const evalsRoute = await import("../../src/app/api/evals/route.ts");
+const evalRunByIdRoute = await import("../../src/app/api/evals/runs/[runId]/route.ts");
 const evalSuitesRoute = await import("../../src/app/api/evals/suites/route.ts");
 const evalSuiteByIdRoute = await import("../../src/app/api/evals/suites/[suiteId]/route.ts");
 
@@ -114,6 +115,39 @@ test("evals GET exposes stored runs and aggregated pass rate inline", async () =
   assert.equal(payload.scorecard.overallPassRate, 100);
   assert.equal(Array.isArray(payload.recentRuns), true);
   assert.equal(payload.recentRuns.length, 1);
+});
+
+test("eval run resource returns persisted results and rejects cancellation of immutable run", async () => {
+  const run = localDb.saveEvalRun({
+    suiteId: "golden-set",
+    suiteName: "Golden Set",
+    target: { type: "model", id: "gpt-4o", label: "Model: gpt-4o" },
+    summary: { total: 1, passed: 0, failed: 1, passRate: 0 },
+    results: [{ caseId: "c1", passed: false, failureKind: "model_quality" }],
+  });
+  const context = { params: Promise.resolve({ runId: run.id }) };
+
+  const getResponse = await evalRunByIdRoute.GET(
+    new Request(`http://localhost/api/evals/${run.id}`),
+    context
+  );
+  assert.equal(getResponse.status, 200);
+  const payload = (await getResponse.json()) as { status: string; results: unknown[] };
+  assert.equal(payload.status, "completed");
+  assert.equal(payload.results.length, 1);
+
+  const cancelResponse = await evalRunByIdRoute.POST(
+    new Request(`http://localhost/api/evals/${run.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ op: "cancel" }),
+    }),
+    context
+  );
+  assert.equal(cancelResponse.status, 409);
+  assert.deepEqual(await cancelResponse.json(), {
+    error: { code: "eval_run_immutable", message: "Completed eval runs cannot be cancelled" },
+  });
 });
 
 test("eval suite routes create, update, fetch, and delete custom suites", async () => {

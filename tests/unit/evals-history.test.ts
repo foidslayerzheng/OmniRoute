@@ -59,6 +59,23 @@ test("eval run history persists target metadata and newest-first ordering", () =
   assert.equal(runs[1].outputs.c1, "ok");
 });
 
+test("persisted eval runs expose durable completed status and can be fetched by id", () => {
+  const saved = evalsDb.saveEvalRun({
+    suiteId: "golden-set",
+    suiteName: "Golden Set",
+    target: { type: "model", id: "gpt-4o", label: "Model: gpt-4o" },
+    summary: { total: 1, passed: 1, failed: 0, passRate: 100 },
+    results: [],
+  });
+
+  core.resetDbInstance();
+  const fetched = evalsDb.getEvalRun(saved.id);
+
+  assert.equal(fetched?.id, saved.id);
+  assert.equal(fetched?.status, "completed");
+  assert.equal(evalsDb.listEvalRuns()[0]?.status, "completed");
+});
+
 test("eval telemetry survives persistence and legacy results remain compatible", () => {
   const telemetry = {
     schemaVersion: 1,
