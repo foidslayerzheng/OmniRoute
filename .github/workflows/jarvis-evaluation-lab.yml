@@ -1,6 +1,12 @@
 name: Jarvis Evaluation Lab
 
 on:
+  push:
+    branches:
+      - jarvis-phase-d
+    paths:
+      - .github/workflows/jarvis-evaluation-lab.yml
+
   workflow_dispatch:
     inputs:
       suite:
@@ -24,7 +30,7 @@ concurrency:
 
 jobs:
   smoke:
-    name: ${{ inputs.suite }}
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'all-smoke' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -80,7 +86,7 @@ jobs:
         run: mkdir -p artifacts .jarvis-lab
 
       - name: Smoke LLMRouterBench adapter
-        if: inputs.suite == 'all-smoke' || inputs.suite == 'router-import'
+        if: (github.event_name == 'push' || inputs.suite == 'all-smoke') || inputs.suite == 'router-import'
         run: |
           set -euo pipefail
           cat > .jarvis-lab/llmrouterbench-sample.json <<'JSON'
@@ -119,7 +125,7 @@ jobs:
           PY
 
       - name: Smoke controlled optimizer gate
-        if: inputs.suite == 'all-smoke' || inputs.suite == 'optimizer-gate'
+        if: (github.event_name == 'push' || inputs.suite == 'all-smoke') || inputs.suite == 'optimizer-gate'
         run: |
           set -euo pipefail
           cat > .jarvis-lab/baseline.json <<'JSON'
@@ -140,7 +146,7 @@ jobs:
           PY
 
       - name: Checkout pinned Hermes for read-only audit
-        if: inputs.suite == 'all-smoke' || inputs.suite == 'hermes-audit'
+        if: (github.event_name == 'push' || inputs.suite == 'all-smoke') || inputs.suite == 'hermes-audit'
         run: |
           set -euo pipefail
           git clone --filter=blob:none --no-checkout https://github.com/NousResearch/hermes-agent.git .jarvis-lab/hermes
@@ -156,7 +162,7 @@ jobs:
             --output artifacts/hermes-upstream-audit.json
 
       - name: Verify pinned external evaluation sources
-        if: inputs.suite == 'all-smoke' || inputs.suite == 'external-pins'
+        if: (github.event_name == 'push' || inputs.suite == 'all-smoke') || inputs.suite == 'external-pins'
         shell: bash
         run: |
           set -euo pipefail
@@ -197,7 +203,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-evaluation-lab-${{ inputs.suite }}-${{ github.run_id }}
+          name: jarvis-evaluation-lab-${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'all-smoke' }}-${{ github.run_id }}
           path: artifacts/
           if-no-files-found: warn
           retention-days: 14
