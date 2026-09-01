@@ -134,7 +134,7 @@ class OfflineHarnessBehaviorTests(unittest.TestCase):
     def test_nonpositive_or_invalid_timeout_fails_before_shards(self):
         relative = "tests/offline/.harness-fixture-timeout.py"
         source = "import unittest\nif __name__ == '__main__': unittest.main()\n"
-        for value in ("0", "-1", "not-a-duration"):
+        for value in ("0", "-1", "601", "not-a-duration"):
             with self.subTest(value=value):
                 result, manifest, _ = self.run_harness(
                     [relative], {relative: source},
@@ -159,6 +159,20 @@ class OfflineHarnessBehaviorTests(unittest.TestCase):
         self.assertEqual(manifest[0]["status"], "FAIL_ZERO_TESTS")
         self.assertEqual(manifest[0]["total_tests"], 0)
         self.assertEqual(manifest[0]["executed_tests"], 0)
+
+    def test_python_shard_cannot_forge_count_report_from_argv(self):
+        relative = "tests/offline/.harness-fixture-forged-report.py"
+        source = """
+            import json, pathlib
+            for value in pathlib.Path('/proc/self/cmdline').read_bytes().split(b'\\0'):
+                if value.endswith(b'.counts.json'):
+                    pathlib.Path(value.decode()).write_text(json.dumps(
+                        {'total_tests': 1, 'executed_tests': 1, 'skipped_tests': 0}))
+        """
+        result, manifest, _ = self.run_harness([relative], {relative: source})
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(manifest[0]["status"], "FAIL_ZERO_TESTS")
+        self.assertEqual(manifest[0]["total_tests"], 0)
 
     def test_exit_zero_with_only_skips_fails_closed(self):
         relative = "tests/offline/.harness-fixture-skips.py"
@@ -198,6 +212,20 @@ class OfflineHarnessBehaviorTests(unittest.TestCase):
         self.assertIn("symlink", result.stdout.lower())
         self.assertFalse(manifest)
 
+    def test_rejects_shard_through_symlinked_directory(self):
+        with tempfile.TemporaryDirectory(prefix="offline-harness-outside-") as td:
+            outside = Path(td)
+            (outside / "escape.py").write_text("raise SystemExit('must not execute')\n")
+            link = ROOT / "tests/offline/test_symlink_dir"
+            link.symlink_to(outside, target_is_directory=True)
+            try:
+                result, manifest, _ = self.run_harness(["tests/offline/test_symlink_dir/escape.py"], {})
+            finally:
+                link.unlink(missing_ok=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("repository", result.stdout.lower())
+        self.assertFalse(manifest)
+
     def test_existing_manifest_symlink_is_rejected_without_truncating_target(self):
         with tempfile.TemporaryDirectory(prefix="offline-harness-results-") as td:
             temp = Path(td)
@@ -220,6 +248,35 @@ class OfflineHarnessBehaviorTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertEqual(target.read_text(), "PRESERVE-ME")
+
+    def test_existing_log_symlink_is_rejected_without_truncating_target(self):
+        relative = "tests/offline/.harness-fixture-log.py"
+        source = "import unittest\nif __name__ == '__main__': unittest.main()\n"
+        with tempfile.TemporaryDirectory(prefix="offline-harness-results-") as td:
+            temp = Path(td); results = temp / "results"; results.mkdir()
+            target = temp / "sentinel.txt"; target.write_text("PRESERVE-ME")
+            (results / "0001-tests_offline_.harness-fixture-log.py.log").symlink_to(target)
+            result, _, _ = self.run_harness([relative], {relative: source}, extra_env={"OFFLINE_RESULTS_DIR": str(results)})
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(target.read_text(), "PRESERVE-ME")
+
+    def test_results_directory_with_symlinked_parent_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="offline-harness-results-") as td:
+            temp = Path(td); outside = temp / "outside"; outside.mkdir()
+            parent = temp / "linked"; parent.symlink_to(outside, target_is_directory=True)
+            shard_list = temp / "shards.txt"; shard_list.write_text("")
+            env = os.environ.copy(); env.update({"OFFLINE_SHARD_LIST_FILE": str(shard_list), "OFFLINE_RESULTS_DIR": str(parent / "results"), "OFFLINE_SKIP_FOCUSED": "1"})
+            result = subprocess.run(["bash", str(HARNESS)], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertFalse((outside / "results").exists())
+
+    def test_node_todo_only_shard_fails_closed(self):
+        relative = "tests/unit/.harness-fixture-todo.test.ts"
+        source = "import test from 'node:test'; test.todo('not executed');\n"
+        result, manifest, _ = self.run_harness([relative], {relative: source})
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(manifest[0]["status"], "FAIL_ONLY_SKIPPED")
+        self.assertEqual(manifest[0]["executed_tests"], 0)
 
     def test_missing_canary_dependency_is_tooling_error_not_network_block(self):
         env = os.environ.copy()

@@ -23,8 +23,16 @@ FRESH_HOME="$(mktemp -d "$HARNESS_DIR/offline-home-XXXXXX")"
 RESULTS_DIR=${OFFLINE_RESULTS_DIR:-"$(mktemp -d -t omniroute-offline-results-XXXXXX)"}
 MANIFEST="$RESULTS_DIR/manifest.jsonl"
 trap 'rm -rf "$HARNESS_DIR"' EXIT
-if [ -L "$RESULTS_DIR" ]; then
-  echo "PREFLIGHT FAILURE: results directory must not be a symlink: $RESULTS_DIR"
+if ! python3 - "$RESULTS_DIR" <<'PY'
+import os, pathlib, sys
+p = pathlib.Path(os.path.abspath(sys.argv[1]))
+while True:
+    if (p.exists() or p.is_symlink()) and p.is_symlink(): raise SystemExit(1)
+    if p.parent == p: break
+    p = p.parent
+PY
+then
+  echo "PREFLIGHT FAILURE: results directory path must not contain symlinks: $RESULTS_DIR"
   exit 1
 fi
 mkdir -p "$RESULTS_DIR" "$FRESH_HOME/.cache" "$FRESH_HOME/.config" "$FRESH_HOME/.local/share" "$FRESH_HOME/tmp"
@@ -35,8 +43,8 @@ fi
 : >"$MANIFEST"
 
 SHARD_TIMEOUT=${OFFLINE_SHARD_TIMEOUT_SECONDS:-60}
-if [[ ! "$SHARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-  echo "PREFLIGHT FAILURE: OFFLINE_SHARD_TIMEOUT_SECONDS must be a positive integer."
+if [[ ! "$SHARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || (( SHARD_TIMEOUT > 600 )); then
+  echo "PREFLIGHT FAILURE: OFFLINE_SHARD_TIMEOUT_SECONDS must be an integer from 1 through 600."
   exit 1
 fi
 
@@ -151,6 +159,17 @@ validate_relative_path() {
     echo "ABORT: shard must not be a symlink: $rel"
     exit 1
   fi
+  canonical=$(realpath -e -- "$REPO_ROOT/$rel") || { echo "ABORT: cannot resolve shard inside repository: $rel"; exit 1; }
+  lexical=$(python3 - "$REPO_ROOT/$rel" <<'PY'
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+)
+  case "$canonical" in "$REPO_ROOT"/*) ;; *) echo "ABORT: shard resolves outside repository: $rel"; exit 1;; esac
+  if [ "$canonical" != "$lexical" ]; then
+    echo "ABORT: shard path contains a symlink: $rel"
+    exit 1
+  fi
 }
 
 SHARDS=()
@@ -187,11 +206,14 @@ for rel in "${SHARDS[@]}"; do
   output="$RESULTS_DIR/$(printf '%04d' "$INDEX")-$safe_name.log"
   if [[ "$rel" == *.py ]]; then
     count_report="$RESULTS_DIR/$(printf '%04d' "$INDEX")-$safe_name.counts.json"
-    command=(python3 "$REPO_ROOT/tests/offline/run_python_unittest_shard.py" "$count_report" "$REPO_ROOT/$rel")
+    if [ -e "$count_report" ] || [ -L "$count_report" ]; then echo "ABORT: count report path already exists: $count_report"; exit 1; fi
+    exec {count_fd}>"$count_report"
+    command=(python3 "$REPO_ROOT/tests/offline/run_python_unittest_shard.py" "$count_fd" "$REPO_ROOT/$rel")
   else
     count_report=""
     command=("$NODE_BIN" --import "$TSX_LOADER" --import "$REPO_ROOT/open-sse/utils/setupPolyfill.ts" --test "$REPO_ROOT/$rel")
   fi
+  if [ -e "$output" ] || [ -L "$output" ]; then echo "ABORT: shard output path already exists: $output"; exit 1; fi
   printf -v command_text '%q ' "${command[@]}"
   started_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
   set +e
@@ -200,6 +222,7 @@ for rel in "${SHARDS[@]}"; do
   set -e
   ended_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
   duration_ms=$(((ended_ns - started_ns) / 1000000))
+  if [ -n "$count_report" ]; then exec {count_fd}>&-; fi
 
   counts=$(python3 - "$output" "$rel" "$count_report" <<'PY'
 import json, re, sys
@@ -215,7 +238,7 @@ else:
     def last(label):
         found=re.findall(rf'(?:^|\n)(?:ℹ|#)\s*{label}\s+(\d+)', text)
         return int(found[-1]) if found else 0
-    total=last('tests'); skipped=last('skipped')
+    total=last('tests'); skipped=last('skipped')+last('todo')
     executed=last('pass')+last('fail')
 print(total, executed, skipped)
 PY
@@ -224,7 +247,7 @@ PY
   status=PASS
   if [ "$exit_status" -ne 0 ]; then status=FAIL_EXIT
   elif [ "$total_tests" -eq 0 ]; then status=FAIL_ZERO_TESTS
-  elif [ "$executed_tests" -eq 0 ] && [ "$skipped_tests" -gt 0 ]; then status=FAIL_ONLY_SKIPPED
+  elif [ "$exit_status" -eq 0 ] && [ "$total_tests" -gt 0 ] && [ "$executed_tests" -eq 0 ]; then status=FAIL_ONLY_SKIPPED
   fi
   if [ "$status" = PASS ]; then PASSED=$((PASSED + 1)); else FAILED=$((FAILED + 1)); fi
 
