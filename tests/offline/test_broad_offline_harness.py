@@ -123,7 +123,192 @@ class OfflineHarnessBehaviorTests(unittest.TestCase):
         self.assertGreaterEqual(record["duration_ms"], 0)
         self.assertLess(record["duration_ms"], 45_000)
         self.assertIn(relative, record["command"])
+        self.assertEqual(record["execution_mode"], "ordinary_regression")
+        self.assertEqual(record["runner_parser_schema_version"], 1)
+        self.assertEqual(record["semantic_provenance"], "runner_reported")
+        self.assertEqual(record["regression_status"], "PASS")
+        cleanup = record["supervisor_observed_execution"]["whole_descendant_cleanup"]
+        self.assertRegex(cleanup["scope_unit"], r"^omniroute-mode-a-[0-9a-f]{32}-\d+\.scope$")
+        self.assertTrue(cleanup["control_group"].endswith("/" + cleanup["scope_unit"]))
+        self.assertRegex(cleanup["invocation_id"], r"^[0-9a-f]{32}$")
+        self.assertEqual(cleanup["initial_cgroup_events"]["populated"], 1)
+        self.assertTrue(cleanup["externally_observed_populated_tasks"])
+        self.assertEqual(cleanup["proof_path"], "systemd_scope_identity_terminal_and_cgroup_path_absent")
+        self.assertTrue(cleanup["terminal_scope_state_proven"])
+        self.assertTrue(cleanup["previously_observed_cgroup_path_absent"])
+        self.assertTrue(cleanup["same_unit_reuse_excluded_during_proof"])
+        self.assertTrue(cleanup["whole_descendant_cleanup"])
+        self.assertNotIn("security_trusted", json.dumps(record))
         self.assertIn("PRESERVED-SHARD-OUTPUT", "\n".join(outputs.values()))
+
+    def test_mode_a_evidence_records_cooperative_threat_model_limitation(self):
+        relative = "tests/offline/.harness-fixture-threat-model.py"
+        source = "import unittest\nclass T(unittest.TestCase):\n def test_ok(self): pass\nif __name__ == '__main__': unittest.main()\n"
+        result, manifest, _ = self.run_harness([relative], {relative: source})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(
+            manifest[0]["mode_a_threat_model_limitation"],
+            "Mode A threat-model limitation: ordinary regression shards are treated as cooperative/non-malicious test code. "
+            "Mode A does not claim protection against a malicious same-UID workload or another hostile same-UID process "
+            "intentionally racing systemd unit/cgroup identity reuse. Runner-reported semantic counts are regression evidence, "
+            "not security-trusted attestation. Adversarial/security properties require Mode B/property-specific external verification.",
+        )
+
+    def test_manifest_structurally_separates_execution_from_runner_semantics(self):
+        relative = "tests/offline/.harness-fixture-structured.py"
+        source = """
+            import unittest
+            class Structured(unittest.TestCase):
+                def test_one(self): pass
+            if __name__ == '__main__': unittest.main()
+        """
+        result, manifest, _ = self.run_harness([relative], {relative: source})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        record = manifest[0]
+        execution = record["supervisor_observed_execution"]
+        semantics = record["runner_reported_semantics"]
+        self.assertEqual(execution["exit_status"], 0)
+        self.assertIsInstance(execution["duration_ms"], int)
+        self.assertEqual(semantics["provenance"], "runner_reported")
+        self.assertEqual(semantics["discovered"], 1)
+        self.assertEqual(semantics["executed"], 1)
+        self.assertEqual(semantics["skipped"], 0)
+        self.assertFalse(any(key in execution for key in ("discovered", "executed", "skipped")))
+        cleanup = execution["whole_descendant_cleanup"]
+        self.assertTrue(cleanup["scope_created_and_inspected"])
+        self.assertFalse(cleanup["externally_observed_zero_tasks"])
+        self.assertIsNone(cleanup["tasks_after_cleanup"])
+        self.assertTrue(cleanup["terminal_scope_state_proven"])
+        self.assertTrue(cleanup["previously_observed_cgroup_path_absent"])
+        self.assertTrue(cleanup["same_unit_reuse_excluded_during_proof"])
+        self.assertTrue(cleanup["whole_descendant_cleanup"])
+        self.assertEqual(record["regression_status"], "PASS")
+
+    def test_pass_requires_whole_descendant_cleanup_evidence(self):
+        relative = "tests/offline/.harness-fixture-detached.py"
+        source = """
+            import os, subprocess, sys, time, unittest
+            class Detached(unittest.TestCase):
+                def test_detached_descendant(self):
+                    subprocess.Popen(
+                        [sys.executable, '-c', 'import time; time.sleep(30)'],
+                        start_new_session=True,
+                    )
+            if __name__ == '__main__': unittest.main()
+        """
+        result, manifest, _ = self.run_harness([relative], {relative: source})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        execution = manifest[0]["supervisor_observed_execution"]
+        cleanup = execution["whole_descendant_cleanup"]
+        self.assertEqual(cleanup["mechanism"], "systemd_user_scope_cgroup_v2")
+        self.assertIsNone(cleanup["tasks_after_cleanup"])
+        self.assertFalse(cleanup["externally_observed_zero_tasks"])
+        self.assertTrue(cleanup["externally_observed_populated_tasks"])
+        self.assertEqual(cleanup["proof_path"], "systemd_scope_identity_terminal_and_cgroup_path_absent")
+        self.assertTrue(cleanup["terminal_scope_state_proven"])
+        self.assertTrue(cleanup["previously_observed_cgroup_path_absent"])
+        self.assertTrue(cleanup["same_unit_reuse_excluded_during_proof"])
+        self.assertTrue(cleanup["whole_descendant_cleanup"])
+        self.assertEqual(manifest[0]["regression_status"], "PASS")
+
+    def test_timeout_with_descendant_cleans_scope_and_preserves_timeout_exit(self):
+        relative = "tests/offline/.harness-fixture-timeout-descendant.py"
+        source = """
+            import subprocess, sys, time, unittest
+            class TimeoutDescendant(unittest.TestCase):
+                def test_timeout(self):
+                    subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
+                    time.sleep(30)
+            if __name__ == '__main__': unittest.main()
+        """
+        result, manifest, _ = self.run_harness(
+            [relative], {relative: source}, extra_env={"OFFLINE_SHARD_TIMEOUT_SECONDS": "1"}
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        record = manifest[0]
+        self.assertEqual(record["exit_status"], 124)
+        self.assertEqual(record["regression_status"], "FAIL_EXIT")
+        cleanup = record["supervisor_observed_execution"]["whole_descendant_cleanup"]
+        self.assertFalse(cleanup["externally_observed_zero_tasks"])
+        self.assertIsNone(cleanup["tasks_after_cleanup"])
+
+    def test_failing_shard_with_descendant_cleans_scope_and_preserves_exit(self):
+        relative = "tests/offline/.harness-fixture-fail-descendant.py"
+        source = """
+            import subprocess, sys, unittest
+            class FailDescendant(unittest.TestCase):
+                def test_fail(self):
+                    subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
+                    self.fail('intentional')
+            if __name__ == '__main__': unittest.main()
+        """
+        result, manifest, _ = self.run_harness([relative], {relative: source})
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        record = manifest[0]
+        self.assertNotEqual(record["exit_status"], 0)
+        self.assertEqual(record["regression_status"], "FAIL_EXIT")
+        cleanup = record["supervisor_observed_execution"]["whole_descendant_cleanup"]
+        self.assertFalse(cleanup["externally_observed_zero_tasks"])
+        self.assertIsNone(cleanup["tasks_after_cleanup"])
+
+    def test_scope_creation_failure_fails_closed(self):
+        relative = "tests/offline/.harness-fixture-scope-create-fail.py"
+        source = "import unittest\nclass T(unittest.TestCase):\n def test_ok(self): pass\nif __name__ == '__main__': unittest.main()\n"
+        result, manifest, _ = self.run_harness(
+            [relative], {relative: source},
+            extra_env={"BASH_FUNC_systemd-run%%": "() { return 73; }"},
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(manifest[0]["regression_status"], "FAIL_CLEANUP")
+        cleanup = manifest[0]["supervisor_observed_execution"]["whole_descendant_cleanup"]
+        self.assertFalse(cleanup["scope_created_and_inspected"])
+        self.assertFalse(cleanup["externally_observed_zero_tasks"])
+
+    def test_scope_inspection_failure_fails_closed(self):
+        relative = "tests/offline/.harness-fixture-scope-inspect-fail.py"
+        source = "import unittest\nclass T(unittest.TestCase):\n def test_ok(self): pass\nif __name__ == '__main__': unittest.main()\n"
+        fake = "() { if [ \"$1\" = --user ] && [ \"$2\" = show ]; then return 74; fi; command /usr/bin/systemctl \"$@\"; }"
+        result, manifest, _ = self.run_harness(
+            [relative], {relative: source}, extra_env={"BASH_FUNC_systemctl%%": fake},
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(manifest[0]["regression_status"], "FAIL_CLEANUP")
+        cleanup = manifest[0]["supervisor_observed_execution"]["whole_descendant_cleanup"]
+        self.assertFalse(cleanup["scope_created_and_inspected"])
+        self.assertFalse(cleanup["externally_observed_zero_tasks"])
+
+    def test_regression_pass_is_impossible_while_observed_cgroup_is_populated(self):
+        relative = "tests/offline/.harness-fixture-populated.py"
+        source = "import unittest\nclass T(unittest.TestCase):\n def test_ok(self): pass\nif __name__ == '__main__': unittest.main()\n"
+        current_cgroup = Path('/proc/self/cgroup').read_text().strip().split(':')[-1]
+        fake = f"() {{ if [ \"$1\" = --user ] && [ \"$2\" = show ]; then printf '%s\\n' {current_cgroup!r}; return 0; fi; return 0; }}"
+        result, manifest, _ = self.run_harness(
+            [relative], {relative: source}, extra_env={"BASH_FUNC_systemctl%%": fake},
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(manifest[0]["regression_status"], "FAIL_CLEANUP")
+        cleanup = manifest[0]["supervisor_observed_execution"]["whole_descendant_cleanup"]
+        self.assertFalse(cleanup["externally_observed_zero_tasks"])
+        self.assertIsNone(cleanup["tasks_after_cleanup"])
+
+    def test_mismatched_scope_identity_fails_closed(self):
+        relative = "tests/offline/.harness-fixture-scope-mismatch.py"
+        source = "import unittest\nclass T(unittest.TestCase):\n def test_ok(self): pass\nif __name__ == '__main__': unittest.main()\n"
+        current_cgroup = Path('/proc/self/cgroup').read_text().strip().split(':')[-1]
+        fake = f'''() {{
+          if [ "$1" = --user ] && [ "$2" = show ]; then
+            printf 'ControlGroup=%s\\nInvocationID=%s\\n' {current_cgroup!r} 00000000000000000000000000000000
+            return 0
+          fi
+          command /usr/bin/systemctl "$@"
+        }}'''
+        result, manifest, _ = self.run_harness(
+            [relative], {relative: source}, extra_env={"BASH_FUNC_systemctl%%": fake},
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        cleanup = manifest[0]["supervisor_observed_execution"]["whole_descendant_cleanup"]
+        self.assertFalse(cleanup["scope_created_and_inspected"])
+        self.assertFalse(cleanup["externally_observed_zero_tasks"])
 
     def test_empty_explicit_shard_list_fails_closed(self):
         result, manifest, _ = self.run_harness([], {})

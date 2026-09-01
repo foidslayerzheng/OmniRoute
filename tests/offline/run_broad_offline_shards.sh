@@ -60,7 +60,7 @@ preflight_tool() {
 
 # Every command used by isolation and canaries must exist before a failed probe
 # can be interpreted as genuine network denial.
-for tool in unshare env bash sh timeout getent curl grep mktemp date python3 find sort tr; do
+for tool in unshare env bash sh timeout getent curl grep mktemp date python3 find sort tr seq systemd-run systemctl; do
   preflight_tool "$tool"
 done
 if [ -n "${OFFLINE_PREFLIGHT_EXTRA_TOOL:-}" ]; then
@@ -215,13 +215,157 @@ for rel in "${SHARDS[@]}"; do
   fi
   if [ -e "$output" ] || [ -L "$output" ]; then echo "ABORT: shard output path already exists: $output"; exit 1; fi
   printf -v command_text '%q ' "${command[@]}"
+  scope_nonce=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+  scope_name="omniroute-mode-a-$scope_nonce-$INDEX"
+  scope_unit="$scope_name.scope"
+  reservation="$HARNESS_DIR/scope-reservations/$scope_unit.json"
+  mkdir -m 700 -p "$HARNESS_DIR/scope-reservations"
+  python3 - "$reservation" "$scope_nonce" "$scope_unit" "$rel" <<'PY'
+import json, os, sys, time
+path, nonce, unit, shard = sys.argv[1:]
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'w') as f:
+    json.dump({'nonce': nonce, 'unit': unit, 'shard': shard, 'created_monotonic_ns': time.monotonic_ns()}, f)
+    f.flush(); os.fsync(f.fileno())
+PY
+  scope_created=false
+  scope_control_group=""
+  scope_invocation_id=""
+  initial_cgroup_events=""
+  scope_stopped=false
+  scope_empty=false
+  observed_populated=false
+  cleanup_proof_path=""
+  cgroup_stat=""
+  alive_snapshot="$HARNESS_DIR/scope-alive-$INDEX.show"
+  terminal_snapshot_a="$HARNESS_DIR/scope-terminal-a-$INDEX.show"
+  terminal_snapshot_b="$HARNESS_DIR/scope-terminal-b-$INDEX.show"
+  terminal_state_proven=false
+  cgroup_path_absent=false
+  no_reuse_proven=false
+  cleanup_error=""
   started_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
   set +e
-  run_in_ns timeout "$SHARD_TIMEOUT" "${command[@]}" >"$output" 2>&1
+  scoped_cmd=""
+  for a in timeout "$SHARD_TIMEOUT" "${command[@]}"; do scoped_cmd+="$(printf '%q ' "$a")"; done
+  systemd-run --user --scope --quiet --unit="$scope_name" \
+    --property=KillMode=control-group \
+    unshare -Urn env -i \
+      PATH="$RUNTIME_PATH" HOME="$FRESH_HOME" TMPDIR="$FRESH_HOME/tmp" \
+      XDG_CACHE_HOME="$FRESH_HOME/.cache" XDG_CONFIG_HOME="$FRESH_HOME/.config" \
+      XDG_DATA_HOME="$FRESH_HOME/.local/share" \
+      DISABLE_SQLITE_AUTO_BACKUP=true OFFLINE_HARNESS=1 NODE_ENV=test \
+      bash -c "sleep 0.05; cd $(printf '%q' "$REPO_ROOT") && exec $scoped_cmd" >"$output" 2>&1 &
+  scope_runner_pid=$!
+  for _ in $(seq 1 100); do
+    if systemctl --user show "$scope_unit" -p Id -p LoadState -p ActiveState -p SubState -p ControlGroup -p InvocationID >"$alive_snapshot" 2>/dev/null; then
+      scope_id=$(grep '^Id=' "$alive_snapshot" | cut -d= -f2-)
+      load_state=$(grep '^LoadState=' "$alive_snapshot" | cut -d= -f2-)
+      active_state=$(grep '^ActiveState=' "$alive_snapshot" | cut -d= -f2-)
+      scope_control_group=$(grep '^ControlGroup=' "$alive_snapshot" | cut -d= -f2-)
+      scope_invocation_id=$(grep '^InvocationID=' "$alive_snapshot" | cut -d= -f2-)
+      events_path="/sys/fs/cgroup$scope_control_group/cgroup.events"
+      if [ "$scope_id" = "$scope_unit" ] && [ "$load_state" = loaded ] \
+          && { [ "$active_state" = active ] || [ "$active_state" = activating ]; } \
+          && [[ "$scope_invocation_id" =~ ^[0-9a-fA-F]{32}$ ]] \
+          && [ "$scope_invocation_id" != 00000000000000000000000000000000 ] \
+          && python3 - "$scope_control_group" "$scope_unit" "$events_path" <<'PY'
+import os, pathlib, sys
+cg, unit, events = sys.argv[1:]
+if not cg.startswith('/') or '..' in pathlib.PurePosixPath(cg).parts: raise SystemExit(1)
+path='/sys/fs/cgroup'+cg
+if os.path.realpath(path) != path or os.path.basename(path) != unit: raise SystemExit(1)
+if not os.path.isfile(events): raise SystemExit(1)
+PY
+      then
+        initial_cgroup_events=$(python3 - "$events_path" <<'PY'
+import json, os, sys
+values={k:int(v) for k,v in (line.split() for line in open(sys.argv[1]))}
+if values.get('populated') != 1: raise SystemExit(1)
+print(json.dumps(values, sort_keys=True, separators=(',', ':')))
+PY
+) || initial_cgroup_events=""
+        cgroup_stat=$(python3 - "$events_path" <<'PY'
+import json, os, sys
+s=os.stat(sys.argv[1]); print(json.dumps({'st_dev':s.st_dev,'st_ino':s.st_ino}, separators=(',',':')))
+PY
+) || cgroup_stat=""
+        if [ -n "$initial_cgroup_events" ] && [ -n "$cgroup_stat" ]; then
+          scope_created=true
+          observed_populated=true
+          break
+        fi
+      fi
+    fi
+    kill -0 "$scope_runner_pid" 2>/dev/null || break
+    sleep 0.01
+  done
+  wait "$scope_runner_pid"
   exit_status=$?
   set -e
   ended_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
   duration_ms=$(((ended_ns - started_ns) / 1000000))
+  if [ "$scope_created" != true ]; then
+    cleanup_error="scope creation or inspection failed"
+  fi
+  if [ "$scope_created" = true ]; then
+    pre_stop="$HARNESS_DIR/scope-pre-stop-$INDEX.show"
+    if systemctl --user show "$scope_unit" -p Id -p LoadState -p ActiveState -p SubState -p ControlGroup -p InvocationID >"$pre_stop" 2>/dev/null; then
+      pre_active=$(grep '^ActiveState=' "$pre_stop" | cut -d= -f2-)
+      pre_id=$(grep '^Id=' "$pre_stop" | cut -d= -f2-)
+      pre_cg=$(grep '^ControlGroup=' "$pre_stop" | cut -d= -f2-)
+      pre_inv=$(grep '^InvocationID=' "$pre_stop" | cut -d= -f2-)
+      if [ "$pre_active" = active ]; then
+        if [ "$pre_id" != "$scope_unit" ] || [ "$pre_cg" != "$scope_control_group" ] || [ "$pre_inv" != "$scope_invocation_id" ]; then
+          cleanup_error="scope identity changed before stop"
+        elif systemctl --user stop "$scope_unit" >/dev/null 2>&1; then scope_stopped=true
+        else cleanup_error="scope stop failed"
+        fi
+      fi
+    else cleanup_error="scope pre-stop inspection failed"
+    fi
+    if [ -z "$cleanup_error" ]; then
+      for _ in $(seq 1 200); do
+        if systemctl --user show "$scope_unit" -p Id -p LoadState -p ActiveState -p SubState -p ControlGroup -p InvocationID >"$terminal_snapshot_a" 2>/dev/null \
+          && python3 - "$terminal_snapshot_a" "$scope_unit" "$scope_invocation_id" "$scope_control_group" <<'PY'
+import sys
+d=dict(line.rstrip('\n').split('=',1) for line in open(sys.argv[1]) if '=' in line)
+same=(d.get('Id')==sys.argv[2] and d.get('InvocationID')==sys.argv[3] and d.get('ControlGroup')==sys.argv[4])
+gone=(d.get('LoadState')=='not-found' and d.get('ActiveState')=='inactive' and d.get('SubState')=='dead' and not d.get('InvocationID') and not d.get('ControlGroup'))
+dead=(d.get('LoadState')=='loaded' and d.get('ActiveState')=='inactive' and d.get('SubState')=='dead' and same)
+raise SystemExit(0 if dead or gone else 1)
+PY
+        then terminal_state_proven=true; break; fi
+        sleep 0.01
+      done
+      if [ "$terminal_state_proven" != true ]; then cleanup_error="exact scope did not reach attributable terminal state"
+      elif python3 - "/sys/fs/cgroup$scope_control_group" <<'PY'
+import os, sys
+try: os.lstat(sys.argv[1])
+except FileNotFoundError: raise SystemExit(0)
+except OSError: raise SystemExit(2)
+raise SystemExit(1)
+PY
+      then cgroup_path_absent=true
+      else cleanup_error="previously observed cgroup path did not disappear with ENOENT"
+      fi
+    fi
+    if [ -z "$cleanup_error" ] && systemctl --user show "$scope_unit" -p Id -p LoadState -p ActiveState -p SubState -p ControlGroup -p InvocationID >"$terminal_snapshot_b" 2>/dev/null \
+      && python3 - "$terminal_snapshot_b" "$scope_unit" "$scope_invocation_id" "$scope_control_group" <<'PY'
+import sys
+d=dict(line.rstrip('\n').split('=',1) for line in open(sys.argv[1]) if '=' in line)
+same=(d.get('Id')==sys.argv[2] and d.get('InvocationID')==sys.argv[3] and d.get('ControlGroup')==sys.argv[4])
+gone=(d.get('LoadState')=='not-found' and d.get('ActiveState')=='inactive' and d.get('SubState')=='dead' and not d.get('InvocationID') and not d.get('ControlGroup'))
+dead=(d.get('LoadState')=='loaded' and d.get('ActiveState')=='inactive' and d.get('SubState')=='dead' and same)
+raise SystemExit(0 if dead or gone else 1)
+PY
+    then
+      no_reuse_proven=true
+      scope_empty=true
+      cleanup_proof_path="systemd_scope_identity_terminal_and_cgroup_path_absent"
+    elif [ -z "$cleanup_error" ]; then cleanup_error="same-unit reuse check failed"
+    fi
+  fi
   if [ -n "$count_report" ]; then exec {count_fd}>&-; fi
 
   counts=$(python3 - "$output" "$rel" "$count_report" <<'PY'
@@ -245,19 +389,65 @@ PY
 )
   read -r total_tests executed_tests skipped_tests <<<"$counts"
   status=PASS
-  if [ "$exit_status" -ne 0 ]; then status=FAIL_EXIT
+  if [ "$scope_created" != true ] || [ "$scope_empty" != true ]; then status=FAIL_CLEANUP
+  elif [ "$exit_status" -ne 0 ]; then status=FAIL_EXIT
   elif [ "$total_tests" -eq 0 ]; then status=FAIL_ZERO_TESTS
   elif [ "$exit_status" -eq 0 ] && [ "$total_tests" -gt 0 ] && [ "$executed_tests" -eq 0 ]; then status=FAIL_ONLY_SKIPPED
   fi
   if [ "$status" = PASS ]; then PASSED=$((PASSED + 1)); else FAILED=$((FAILED + 1)); fi
 
-  python3 - "$MANIFEST" "$rel" "$command_text" "$exit_status" "$duration_ms" "$total_tests" "$executed_tests" "$skipped_tests" "$status" "$output" <<'PY'
+  python3 - "$MANIFEST" "$rel" "$command_text" "$exit_status" "$duration_ms" "$total_tests" "$executed_tests" "$skipped_tests" "$status" "$output" "$scope_unit" "$scope_control_group" "$scope_invocation_id" "$initial_cgroup_events" "$cgroup_stat" "$observed_populated" "$scope_created" "$scope_stopped" "$terminal_state_proven" "$cgroup_path_absent" "$no_reuse_proven" "$scope_empty" "$cleanup_proof_path" "$cleanup_error" <<'PY'
 import json,sys
 keys=('path','command','exit_status','duration_ms','total_tests','executed_tests','skipped_tests','status','output_file')
-vals=sys.argv[2:]
+vals=sys.argv[2:11]
 for i in (2,3,4,5,6): vals[i]=int(vals[i])
-with open(sys.argv[1],'a') as f: f.write(json.dumps(dict(zip(keys,vals)),sort_keys=True)+'\n')
+record=dict(zip(keys,vals))
+scope_unit, control_group, invocation_id, initial_events, cgstat, observed_populated, created, stopped, terminal, absent, no_reuse, empty, proof_path, cleanup_error = sys.argv[11:25]
+record.update(
+    execution_mode='ordinary_regression',
+    mode_a_threat_model_limitation=(
+        'Mode A threat-model limitation: ordinary regression shards are treated as cooperative/non-malicious test code. '
+        'Mode A does not claim protection against a malicious same-UID workload or another hostile same-UID process '
+        'intentionally racing systemd unit/cgroup identity reuse. Runner-reported semantic counts are regression evidence, '
+        'not security-trusted attestation. Adversarial/security properties require Mode B/property-specific external verification.'
+    ),
+    runner_parser_schema_version=1,
+    semantic_provenance='runner_reported',
+    regression_status=record['status'],
+    supervisor_observed_execution={
+        'exit_status': record['exit_status'],
+        'duration_ms': record['duration_ms'],
+        'output_file': record['output_file'],
+        'whole_descendant_cleanup': {
+            'mechanism': 'systemd_user_scope_cgroup_v2',
+            'scope_unit': scope_unit,
+            'control_group': control_group,
+            'invocation_id': invocation_id or None,
+            'initial_cgroup_events': json.loads(initial_events) if initial_events else None,
+            'initial_cgroup_stat': json.loads(cgstat) if cgstat else None,
+            'externally_observed_populated_tasks': observed_populated == 'true',
+            'scope_created_and_inspected': created == 'true',
+            'scope_stop_requested': stopped == 'true',
+            'terminal_scope_state_proven': terminal == 'true',
+            'previously_observed_cgroup_path_absent': absent == 'true',
+            'same_unit_reuse_excluded_during_proof': no_reuse == 'true',
+            'whole_descendant_cleanup': empty == 'true',
+            'tasks_after_cleanup': None,
+            'externally_observed_zero_tasks': False,
+            'proof_path': proof_path or None,
+            'error': cleanup_error or None,
+        },
+    },
+    runner_reported_semantics={
+        'provenance': 'runner_reported',
+        'discovered': record['total_tests'],
+        'executed': record['executed_tests'],
+        'skipped': record['skipped_tests'],
+    },
+)
+with open(sys.argv[1],'a') as f: f.write(json.dumps(record,sort_keys=True)+'\n')
 PY
+  systemctl --user reset-failed "$scope_unit" >/dev/null 2>&1 || true
   printf '[%d/%d] %s %s (exit=%d tests=%d executed=%d skipped=%d duration_ms=%d)\n' \
     "$INDEX" "${#SHARDS[@]}" "$rel" "$status" "$exit_status" "$total_tests" "$executed_tests" "$skipped_tests" "$duration_ms"
 done
