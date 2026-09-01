@@ -1,0 +1,203 @@
+name: Jarvis Evaluation Lab
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Evaluation smoke suite"
+        required: true
+        type: choice
+        default: all-smoke
+        options:
+          - all-smoke
+          - hermes-audit
+          - router-import
+          - optimizer-gate
+          - external-pins
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jarvis-evaluation-lab-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: ${{ inputs.suite }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HERMES_SHA: 9366ba3afb1f27f30921f5481609c604ad9c37a5
+      LLM_ROUTER_BENCH_SHA: c77cb0506949d8f959e97967d2fefca0e8ff1b05
+      AGENT_LIGHTNING_SHA: 88528bf4b7360d852f5bc5d023943697953ec332
+      AGENT_DOJO_SHA: 357c80dea9af34323f709c3505d9e6d224654c7e
+      AGENT_SCAN_SHA: 0c867567b85986a40a51e99f59d3188c14f4619a
+      BROWSER_GYM_SHA: 9e779f087de9a65668b6974d11f9ce9816026e96
+      BROWSER_USE_BENCH_SHA: e3c6fc92b55934954831f16ab672d85939c3015e
+    steps:
+      - name: Checkout OmniRoute
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile lab scripts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/router-eval/import-llmrouterbench.py \
+            scripts/jarvis-eval/candidate_gate.py \
+            scripts/jarvis-eval/hermes_upstream_audit.py \
+            scripts/jarvis-eval/verify_external_pin.py
+
+      - name: Verify external pin manifest matches workflow
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          pins = json.load(open('config/jarvis-eval/external-pins.json', encoding='utf-8'))['pins']
+          expected = {
+              'hermes': os.environ['HERMES_SHA'],
+              'llmRouterBench': os.environ['LLM_ROUTER_BENCH_SHA'],
+              'agentLightning': os.environ['AGENT_LIGHTNING_SHA'],
+              'agentDojo': os.environ['AGENT_DOJO_SHA'],
+              'agentScan': os.environ['AGENT_SCAN_SHA'],
+              'browserGym': os.environ['BROWSER_GYM_SHA'],
+              'browserUseBenchmark': os.environ['BROWSER_USE_BENCH_SHA'],
+          }
+          mismatches = {k: (pins[k]['sha'], v) for k, v in expected.items() if pins[k]['sha'] != v}
+          if mismatches:
+              raise SystemExit(f'pin mismatch: {mismatches}')
+          print('external pin manifest matches workflow')
+          PY
+
+      - name: Create artifact directory
+        run: mkdir -p artifacts .jarvis-lab
+
+      - name: Smoke LLMRouterBench adapter
+        if: inputs.suite == 'all-smoke' || inputs.suite == 'router-import'
+        run: |
+          set -euo pipefail
+          cat > .jarvis-lab/llmrouterbench-sample.json <<'JSON'
+          {
+            "dataset_id": "smoke",
+            "split": "test",
+            "model_name": "model-a",
+            "records": [
+              {
+                "index": 0,
+                "origin_query": "2+2?",
+                "prompt": "2+2?",
+                "prediction": "4",
+                "ground_truth": "4",
+                "score": 1.0,
+                "prompt_tokens": 4,
+                "completion_tokens": 1,
+                "cost": 0.00001
+              }
+            ]
+          }
+          JSON
+          python scripts/router-eval/import-llmrouterbench.py \
+            --input .jarvis-lab/llmrouterbench-sample.json \
+            --output artifacts/llmrouterbench.ndjson \
+            --timestamp 2026-09-01T00:00:00+00:00
+          python - <<'PY'
+          import json
+          row = json.loads(open('artifacts/llmrouterbench.ndjson', encoding='utf-8').readline())
+          required = {'sampleId','routeInput','configId','selectedModel','expectedModel','latencyMs','costUsd','success','timestamp','metadata'}
+          missing = required - row.keys()
+          assert not missing, missing
+          assert row['selectedModel'] == 'model-a'
+          assert row['success'] is True
+          print('router import smoke passed')
+          PY
+
+      - name: Smoke controlled optimizer gate
+        if: inputs.suite == 'all-smoke' || inputs.suite == 'optimizer-gate'
+        run: |
+          set -euo pipefail
+          cat > .jarvis-lab/baseline.json <<'JSON'
+          {"successRate":0.80,"avgLatencyMs":1000,"avgCostUsd":0.010,"securityFailures":0,"browserSuccessRate":0.70}
+          JSON
+          cat > .jarvis-lab/candidate.json <<'JSON'
+          {"successRate":0.82,"avgLatencyMs":1010,"avgCostUsd":0.0101,"securityFailures":0,"browserSuccessRate":0.71}
+          JSON
+          python scripts/jarvis-eval/candidate_gate.py \
+            --baseline .jarvis-lab/baseline.json \
+            --candidate .jarvis-lab/candidate.json \
+            --output artifacts/candidate-gate.json
+          python - <<'PY'
+          import json
+          result = json.load(open('artifacts/candidate-gate.json', encoding='utf-8'))
+          assert result['promotionAllowed'] is True
+          print('optimizer gate smoke passed')
+          PY
+
+      - name: Checkout pinned Hermes for read-only audit
+        if: inputs.suite == 'all-smoke' || inputs.suite == 'hermes-audit'
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/NousResearch/hermes-agent.git .jarvis-lab/hermes
+          git -C .jarvis-lab/hermes fetch --depth=1 origin "$HERMES_SHA"
+          git -C .jarvis-lab/hermes checkout --detach "$HERMES_SHA"
+          python scripts/jarvis-eval/verify_external_pin.py \
+            --repo-dir .jarvis-lab/hermes \
+            --expected-sha "$HERMES_SHA" \
+            --expect README.md
+          python scripts/jarvis-eval/hermes_upstream_audit.py \
+            --upstream-dir .jarvis-lab/hermes \
+            --upstream-ref "$HERMES_SHA" \
+            --output artifacts/hermes-upstream-audit.json
+
+      - name: Verify pinned external evaluation sources
+        if: inputs.suite == 'all-smoke' || inputs.suite == 'external-pins'
+        shell: bash
+        run: |
+          set -euo pipefail
+          clone_pin() {
+            local repo="$1" sha="$2" dir="$3"
+            git clone --filter=blob:none --no-checkout "https://github.com/${repo}.git" "$dir"
+            git -C "$dir" fetch --depth=1 origin "$sha"
+            git -C "$dir" checkout --detach "$sha"
+          }
+
+          clone_pin ynulihao/LLMRouterBench "$LLM_ROUTER_BENCH_SHA" .jarvis-lab/llmrouterbench
+          python scripts/jarvis-eval/verify_external_pin.py --repo-dir .jarvis-lab/llmrouterbench --expected-sha "$LLM_ROUTER_BENCH_SHA" --expect README.md --expect baselines
+
+          clone_pin microsoft/agent-lightning "$AGENT_LIGHTNING_SHA" .jarvis-lab/agent-lightning
+          python scripts/jarvis-eval/verify_external_pin.py --repo-dir .jarvis-lab/agent-lightning --expected-sha "$AGENT_LIGHTNING_SHA" --expect README.md --expect pyproject.toml
+
+          clone_pin sequrity-ai/agentdojo "$AGENT_DOJO_SHA" .jarvis-lab/agentdojo
+          python scripts/jarvis-eval/verify_external_pin.py --repo-dir .jarvis-lab/agentdojo --expected-sha "$AGENT_DOJO_SHA" --expect README.md
+
+          clone_pin snyk/agent-scan "$AGENT_SCAN_SHA" .jarvis-lab/agent-scan
+          python scripts/jarvis-eval/verify_external_pin.py --repo-dir .jarvis-lab/agent-scan --expected-sha "$AGENT_SCAN_SHA" --expect README.md --expect pyproject.toml
+
+          clone_pin ServiceNow/BrowserGym "$BROWSER_GYM_SHA" .jarvis-lab/browsergym
+          python scripts/jarvis-eval/verify_external_pin.py --repo-dir .jarvis-lab/browsergym --expected-sha "$BROWSER_GYM_SHA" --expect README.md
+
+          clone_pin browser-use/benchmark "$BROWSER_USE_BENCH_SHA" .jarvis-lab/browser-use-benchmark
+          python scripts/jarvis-eval/verify_external_pin.py --repo-dir .jarvis-lab/browser-use-benchmark --expected-sha "$BROWSER_USE_BENCH_SHA" --expect README.md --expect run_framework_eval.py
+
+          cat > artifacts/external-pins.json <<JSON
+          {
+            "schemaVersion": 1,
+            "verified": true,
+            "note": "Smoke verification only. External benchmark/security code was not executed and no production credentials were exposed."
+          }
+          JSON
+
+      - name: Upload evaluation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-evaluation-lab-${{ inputs.suite }}-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14

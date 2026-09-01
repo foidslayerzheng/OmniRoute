@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-09-01",
+  "pins": {
+    "hermes": {
+      "repo": "NousResearch/hermes-agent",
+      "sha": "9366ba3afb1f27f30921f5481609c604ad9c37a5",
+      "purpose": "read-only upstream capability audit"
+    },
+    "llmRouterBench": {
+      "repo": "ynulihao/LLMRouterBench",
+      "sha": "c77cb0506949d8f959e97967d2fefca0e8ff1b05",
+      "purpose": "router corpus and methodology evaluation"
+    },
+    "agentLightning": {
+      "repo": "microsoft/agent-lightning",
+      "sha": "88528bf4b7360d852f5bc5d023943697953ec332",
+      "purpose": "offline controlled optimization experiments"
+    },
+    "agentDojo": {
+      "repo": "sequrity-ai/agentdojo",
+      "sha": "357c80dea9af34323f709c3505d9e6d224654c7e",
+      "purpose": "prompt-injection attack and defense evaluation"
+    },
+    "agentScan": {
+      "repo": "snyk/agent-scan",
+      "sha": "0c867567b85986a40a51e99f59d3188c14f4619a",
+      "purpose": "MCP, agent, and skill security scanning; successor to MCP-Scan"
+    },
+    "browserGym": {
+      "repo": "ServiceNow/BrowserGym",
+      "sha": "9e779f087de9a65668b6974d11f9ce9816026e96",
+      "purpose": "standardized browser-agent environments"
+    },
+    "browserUseBenchmark": {
+      "repo": "browser-use/benchmark",
+      "sha": "e3c6fc92b55934954831f16ab672d85939c3015e",
+      "purpose": "bounded browser-agent benchmark including Browserbase support"
+    }
+  }
+}
