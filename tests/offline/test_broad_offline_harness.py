@@ -131,6 +131,18 @@ class OfflineHarnessBehaviorTests(unittest.TestCase):
         self.assertRegex(cleanup["scope_unit"], r"^omniroute-mode-a-[0-9a-f]{32}-\d+\.scope$")
         self.assertTrue(cleanup["control_group"].endswith("/" + cleanup["scope_unit"]))
         self.assertRegex(cleanup["invocation_id"], r"^[0-9a-f]{32}$")
+        initial_identity = cleanup["initial_live_identity_snapshot"]
+        self.assertEqual(initial_identity["Id"], cleanup["scope_unit"])
+        self.assertEqual(initial_identity["LoadState"], "loaded")
+        self.assertEqual(initial_identity["ActiveState"], "active")
+        self.assertEqual(initial_identity["SubState"], "running")
+        self.assertEqual(initial_identity["ControlGroup"], cleanup["control_group"])
+        self.assertEqual(initial_identity["InvocationID"], cleanup["invocation_id"])
+        terminal_identity = cleanup["terminal_identity_snapshot"]
+        self.assertEqual(terminal_identity["Id"], cleanup["scope_unit"])
+        self.assertEqual(terminal_identity["ActiveState"], "inactive")
+        self.assertEqual(terminal_identity["SubState"], "dead")
+        self.assertEqual(cleanup["no_reuse_identity_snapshot"], terminal_identity)
         self.assertEqual(cleanup["initial_cgroup_events"]["populated"], 1)
         self.assertTrue(cleanup["externally_observed_populated_tasks"])
         self.assertEqual(cleanup["proof_path"], "systemd_scope_identity_terminal_and_cgroup_path_absent")
@@ -309,6 +321,63 @@ class OfflineHarnessBehaviorTests(unittest.TestCase):
         cleanup = manifest[0]["supervisor_observed_execution"]["whole_descendant_cleanup"]
         self.assertFalse(cleanup["scope_created_and_inspected"])
         self.assertFalse(cleanup["externally_observed_zero_tasks"])
+
+    def assert_post_workload_cleanup_fault(self, fault, expected_reason, *, terminal=False, absent=False):
+        relative = f"tests/offline/.harness-fixture-cleanup-{fault}.py"
+        if fault == "stop_failure":
+            source = (
+                "import subprocess, sys, unittest\n"
+                "class T(unittest.TestCase):\n"
+                " def test_ok(self): subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)\n"
+                "if __name__ == '__main__': unittest.main()\n"
+            )
+        else:
+            source = "import unittest\nclass T(unittest.TestCase):\n def test_ok(self): pass\nif __name__ == '__main__': unittest.main()\n"
+        result, manifest, _ = self.run_harness(
+            [relative], {relative: source},
+            extra_env={"OFFLINE_TEST_MODE_A_CLEANUP_FAULT": fault},
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(len(manifest), 1)
+        record = manifest[0]
+        self.assertEqual(record["exit_status"], 0)
+        self.assertEqual(record["total_tests"], 1)
+        self.assertEqual(record["executed_tests"], 1)
+        self.assertEqual(record["regression_status"], "FAIL_CLEANUP")
+        cleanup = record["supervisor_observed_execution"]["whole_descendant_cleanup"]
+        self.assertTrue(cleanup["scope_created_and_inspected"])
+        self.assertEqual(cleanup["cleanup_proof_failure_reason"], expected_reason)
+        self.assertEqual(cleanup["error"], expected_reason)
+        self.assertFalse(cleanup["whole_descendant_cleanup"])
+        self.assertIsNone(cleanup["proof_path"])
+        self.assertEqual(cleanup["terminal_scope_state_proven"], terminal)
+        self.assertEqual(cleanup["previously_observed_cgroup_path_absent"], absent)
+
+    def test_systemctl_stop_failure_prevents_regression_pass(self):
+        self.assert_post_workload_cleanup_fault("stop_failure", "scope stop failed")
+
+    def test_attributable_terminal_state_timeout_prevents_regression_pass(self):
+        self.assert_post_workload_cleanup_fault(
+            "terminal_timeout", "exact scope terminal-state observation timed out"
+        )
+
+    def test_terminal_identity_mismatch_prevents_regression_pass(self):
+        self.assert_post_workload_cleanup_fault(
+            "terminal_identity_mismatch", "terminal scope identity mismatch"
+        )
+
+    def test_canonical_cgroup_path_still_existing_prevents_regression_pass(self):
+        self.assert_post_workload_cleanup_fault(
+            "cgroup_path_present",
+            "previously observed cgroup path did not disappear with ENOENT",
+            terminal=True,
+        )
+
+    def test_same_unit_reuse_in_final_snapshot_prevents_regression_pass(self):
+        self.assert_post_workload_cleanup_fault(
+            "same_unit_reuse", "same-unit reuse detected in final identity snapshot",
+            terminal=True, absent=True,
+        )
 
     def test_empty_explicit_shard_list_fails_closed(self):
         result, manifest, _ = self.run_harness([], {})

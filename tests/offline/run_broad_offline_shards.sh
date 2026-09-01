@@ -231,6 +231,9 @@ PY
   scope_created=false
   scope_control_group=""
   scope_invocation_id=""
+  initial_identity_json=""
+  terminal_identity_json=""
+  final_identity_json=""
   initial_cgroup_events=""
   scope_stopped=false
   scope_empty=false
@@ -262,11 +265,12 @@ PY
       scope_id=$(grep '^Id=' "$alive_snapshot" | cut -d= -f2-)
       load_state=$(grep '^LoadState=' "$alive_snapshot" | cut -d= -f2-)
       active_state=$(grep '^ActiveState=' "$alive_snapshot" | cut -d= -f2-)
+      sub_state=$(grep '^SubState=' "$alive_snapshot" | cut -d= -f2-)
       scope_control_group=$(grep '^ControlGroup=' "$alive_snapshot" | cut -d= -f2-)
       scope_invocation_id=$(grep '^InvocationID=' "$alive_snapshot" | cut -d= -f2-)
       events_path="/sys/fs/cgroup$scope_control_group/cgroup.events"
       if [ "$scope_id" = "$scope_unit" ] && [ "$load_state" = loaded ] \
-          && { [ "$active_state" = active ] || [ "$active_state" = activating ]; } \
+          && [ "$active_state" = active ] && [ "$sub_state" = running ] \
           && [[ "$scope_invocation_id" =~ ^[0-9a-fA-F]{32}$ ]] \
           && [ "$scope_invocation_id" != 00000000000000000000000000000000 ] \
           && python3 - "$scope_control_group" "$scope_unit" "$events_path" <<'PY'
@@ -291,6 +295,16 @@ s=os.stat(sys.argv[1]); print(json.dumps({'st_dev':s.st_dev,'st_ino':s.st_ino}, 
 PY
 ) || cgroup_stat=""
         if [ -n "$initial_cgroup_events" ] && [ -n "$cgroup_stat" ]; then
+          initial_identity_json=$(python3 - "$alive_snapshot" <<'PY'
+import json, sys
+required=('Id','LoadState','ActiveState','SubState','ControlGroup','InvocationID')
+d=dict(line.rstrip('\n').split('=',1) for line in open(sys.argv[1]) if '=' in line)
+if any(k not in d for k in required): raise SystemExit(1)
+print(json.dumps({k:d[k] for k in required}, sort_keys=True, separators=(',',':')))
+PY
+) || initial_identity_json=""
+        fi
+        if [ -n "$initial_cgroup_events" ] && [ -n "$cgroup_stat" ] && [ -n "$initial_identity_json" ]; then
           scope_created=true
           observed_populated=true
           break
@@ -318,7 +332,8 @@ PY
       if [ "$pre_active" = active ]; then
         if [ "$pre_id" != "$scope_unit" ] || [ "$pre_cg" != "$scope_control_group" ] || [ "$pre_inv" != "$scope_invocation_id" ]; then
           cleanup_error="scope identity changed before stop"
-        elif systemctl --user stop "$scope_unit" >/dev/null 2>&1; then scope_stopped=true
+        elif { [ "${OFFLINE_TEST_MODE_A_CLEANUP_FAULT:-}" != stop_failure ] || [[ "$rel" != tests/offline/.harness-fixture-cleanup-* ]]; } \
+          && systemctl --user stop "$scope_unit" >/dev/null 2>&1; then scope_stopped=true
         else cleanup_error="scope stop failed"
         fi
       fi
@@ -326,8 +341,26 @@ PY
     fi
     if [ -z "$cleanup_error" ]; then
       for _ in $(seq 1 200); do
-        if systemctl --user show "$scope_unit" -p Id -p LoadState -p ActiveState -p SubState -p ControlGroup -p InvocationID >"$terminal_snapshot_a" 2>/dev/null \
-          && python3 - "$terminal_snapshot_a" "$scope_unit" "$scope_invocation_id" "$scope_control_group" <<'PY'
+        if systemctl --user show "$scope_unit" -p Id -p LoadState -p ActiveState -p SubState -p ControlGroup -p InvocationID >"$terminal_snapshot_a" 2>/dev/null; then
+          if [ "${OFFLINE_TEST_MODE_A_CLEANUP_FAULT:-}" = terminal_timeout ] && [[ "$rel" = tests/offline/.harness-fixture-cleanup-* ]]; then
+            printf 'Id=%s\nLoadState=loaded\nActiveState=active\nSubState=running\nControlGroup=%s\nInvocationID=%s\n' \
+              "$scope_unit" "$scope_control_group" "$scope_invocation_id" >"$terminal_snapshot_a"
+          elif [ "${OFFLINE_TEST_MODE_A_CLEANUP_FAULT:-}" = terminal_identity_mismatch ] && [[ "$rel" = tests/offline/.harness-fixture-cleanup-* ]]; then
+            printf 'Id=%s\nLoadState=loaded\nActiveState=inactive\nSubState=dead\nControlGroup=%s\nInvocationID=ffffffffffffffffffffffffffffffff\n' \
+              "$scope_unit" "$scope_control_group" >"$terminal_snapshot_a"
+          fi
+          if ! python3 - "$terminal_snapshot_a" "$scope_unit" "$scope_invocation_id" "$scope_control_group" <<'PY'
+import sys
+d=dict(line.rstrip('\n').split('=',1) for line in open(sys.argv[1]) if '=' in line)
+if d.get('Id')==sys.argv[2] and d.get('LoadState')=='loaded' and \
+   (d.get('InvocationID')!=sys.argv[3] or d.get('ControlGroup')!=sys.argv[4]): raise SystemExit(0)
+raise SystemExit(1)
+PY
+          then :
+          else cleanup_error="terminal scope identity mismatch"; break
+          fi
+        fi
+        if [ -z "$cleanup_error" ] && python3 - "$terminal_snapshot_a" "$scope_unit" "$scope_invocation_id" "$scope_control_group" <<'PY'
 import sys
 d=dict(line.rstrip('\n').split('=',1) for line in open(sys.argv[1]) if '=' in line)
 same=(d.get('Id')==sys.argv[2] and d.get('InvocationID')==sys.argv[3] and d.get('ControlGroup')==sys.argv[4])
@@ -335,22 +368,53 @@ gone=(d.get('LoadState')=='not-found' and d.get('ActiveState')=='inactive' and d
 dead=(d.get('LoadState')=='loaded' and d.get('ActiveState')=='inactive' and d.get('SubState')=='dead' and same)
 raise SystemExit(0 if dead or gone else 1)
 PY
-        then terminal_state_proven=true; break; fi
+        then
+          terminal_identity_json=$(python3 - "$terminal_snapshot_a" <<'PY'
+import json, sys
+required=('Id','LoadState','ActiveState','SubState','ControlGroup','InvocationID')
+d=dict(line.rstrip('\n').split('=',1) for line in open(sys.argv[1]) if '=' in line)
+if any(k not in d for k in required): raise SystemExit(1)
+print(json.dumps({k:d[k] for k in required}, sort_keys=True, separators=(',',':')))
+PY
+) || terminal_identity_json=""
+          if [ -n "$terminal_identity_json" ]; then terminal_state_proven=true; break; fi
+        fi
         sleep 0.01
       done
-      if [ "$terminal_state_proven" != true ]; then cleanup_error="exact scope did not reach attributable terminal state"
-      elif python3 - "/sys/fs/cgroup$scope_control_group" <<'PY'
+      if [ -n "$cleanup_error" ]; then :
+      elif [ "$terminal_state_proven" != true ]; then cleanup_error="exact scope terminal-state observation timed out"
+      else
+        cgroup_probe_path="/sys/fs/cgroup$scope_control_group"
+        if [ "${OFFLINE_TEST_MODE_A_CLEANUP_FAULT:-}" = cgroup_path_present ] && [[ "$rel" = tests/offline/.harness-fixture-cleanup-* ]]; then
+          cgroup_probe_path=/sys/fs/cgroup
+        fi
+        if python3 - "$cgroup_probe_path" <<'PY'
 import os, sys
 try: os.lstat(sys.argv[1])
 except FileNotFoundError: raise SystemExit(0)
 except OSError: raise SystemExit(2)
 raise SystemExit(1)
 PY
-      then cgroup_path_absent=true
-      else cleanup_error="previously observed cgroup path did not disappear with ENOENT"
+        then cgroup_path_absent=true
+        else cleanup_error="previously observed cgroup path did not disappear with ENOENT"
+        fi
       fi
     fi
-    if [ -z "$cleanup_error" ] && systemctl --user show "$scope_unit" -p Id -p LoadState -p ActiveState -p SubState -p ControlGroup -p InvocationID >"$terminal_snapshot_b" 2>/dev/null \
+    if [ -z "$cleanup_error" ] && systemctl --user show "$scope_unit" -p Id -p LoadState -p ActiveState -p SubState -p ControlGroup -p InvocationID >"$terminal_snapshot_b" 2>/dev/null; then
+      if [ "${OFFLINE_TEST_MODE_A_CLEANUP_FAULT:-}" = same_unit_reuse ] && [[ "$rel" = tests/offline/.harness-fixture-cleanup-* ]]; then
+        printf 'Id=%s\nLoadState=loaded\nActiveState=active\nSubState=running\nControlGroup=/user.slice/reused/%s\nInvocationID=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n' \
+          "$scope_unit" "$scope_unit" >"$terminal_snapshot_b"
+      fi
+      final_identity_json=$(python3 - "$terminal_snapshot_b" <<'PY'
+import json, sys
+required=('Id','LoadState','ActiveState','SubState','ControlGroup','InvocationID')
+d=dict(line.rstrip('\n').split('=',1) for line in open(sys.argv[1]) if '=' in line)
+if any(k not in d for k in required): raise SystemExit(1)
+print(json.dumps({k:d[k] for k in required}, sort_keys=True, separators=(',',':')))
+PY
+) || final_identity_json=""
+    fi
+    if [ -z "$cleanup_error" ] && [ -n "$final_identity_json" ] \
       && python3 - "$terminal_snapshot_b" "$scope_unit" "$scope_invocation_id" "$scope_control_group" <<'PY'
 import sys
 d=dict(line.rstrip('\n').split('=',1) for line in open(sys.argv[1]) if '=' in line)
@@ -363,7 +427,7 @@ PY
       no_reuse_proven=true
       scope_empty=true
       cleanup_proof_path="systemd_scope_identity_terminal_and_cgroup_path_absent"
-    elif [ -z "$cleanup_error" ]; then cleanup_error="same-unit reuse check failed"
+    elif [ -z "$cleanup_error" ]; then cleanup_error="same-unit reuse detected in final identity snapshot"
     fi
   fi
   if [ -n "$count_report" ]; then exec {count_fd}>&-; fi
@@ -396,13 +460,14 @@ PY
   fi
   if [ "$status" = PASS ]; then PASSED=$((PASSED + 1)); else FAILED=$((FAILED + 1)); fi
 
-  python3 - "$MANIFEST" "$rel" "$command_text" "$exit_status" "$duration_ms" "$total_tests" "$executed_tests" "$skipped_tests" "$status" "$output" "$scope_unit" "$scope_control_group" "$scope_invocation_id" "$initial_cgroup_events" "$cgroup_stat" "$observed_populated" "$scope_created" "$scope_stopped" "$terminal_state_proven" "$cgroup_path_absent" "$no_reuse_proven" "$scope_empty" "$cleanup_proof_path" "$cleanup_error" <<'PY'
+  python3 - "$MANIFEST" "$rel" "$command_text" "$exit_status" "$duration_ms" "$total_tests" "$executed_tests" "$skipped_tests" "$status" "$output" "$scope_unit" "$scope_control_group" "$scope_invocation_id" "$initial_cgroup_events" "$cgroup_stat" "$observed_populated" "$scope_created" "$scope_stopped" "$terminal_state_proven" "$cgroup_path_absent" "$no_reuse_proven" "$scope_empty" "$cleanup_proof_path" "$cleanup_error" "$initial_identity_json" "$terminal_identity_json" "$final_identity_json" <<'PY'
 import json,sys
 keys=('path','command','exit_status','duration_ms','total_tests','executed_tests','skipped_tests','status','output_file')
 vals=sys.argv[2:11]
 for i in (2,3,4,5,6): vals[i]=int(vals[i])
 record=dict(zip(keys,vals))
 scope_unit, control_group, invocation_id, initial_events, cgstat, observed_populated, created, stopped, terminal, absent, no_reuse, empty, proof_path, cleanup_error = sys.argv[11:25]
+initial_identity, terminal_identity, final_identity = sys.argv[25:28]
 record.update(
     execution_mode='ordinary_regression',
     mode_a_threat_model_limitation=(
@@ -423,6 +488,9 @@ record.update(
             'scope_unit': scope_unit,
             'control_group': control_group,
             'invocation_id': invocation_id or None,
+            'initial_live_identity_snapshot': json.loads(initial_identity) if initial_identity else None,
+            'terminal_identity_snapshot': json.loads(terminal_identity) if terminal_identity else None,
+            'no_reuse_identity_snapshot': json.loads(final_identity) if final_identity else None,
             'initial_cgroup_events': json.loads(initial_events) if initial_events else None,
             'initial_cgroup_stat': json.loads(cgstat) if cgstat else None,
             'externally_observed_populated_tasks': observed_populated == 'true',
@@ -435,6 +503,7 @@ record.update(
             'tasks_after_cleanup': None,
             'externally_observed_zero_tasks': False,
             'proof_path': proof_path or None,
+            'cleanup_proof_failure_reason': cleanup_error or None,
             'error': cleanup_error or None,
         },
     },
