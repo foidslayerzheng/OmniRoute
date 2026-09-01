@@ -366,6 +366,17 @@ class OfflineHarnessBehaviorTests(unittest.TestCase):
             "terminal_identity_mismatch", "terminal scope identity mismatch"
         )
 
+    def test_wrong_id_not_found_terminal_snapshot_prevents_regression_pass(self):
+        self.assert_post_workload_cleanup_fault(
+            "terminal_wrong_id_gone", "terminal scope identity mismatch"
+        )
+
+    def test_wrong_id_not_found_final_snapshot_prevents_regression_pass(self):
+        self.assert_post_workload_cleanup_fault(
+            "final_wrong_id_gone", "same-unit reuse detected in final identity snapshot",
+            terminal=True, absent=True,
+        )
+
     def test_canonical_cgroup_path_still_existing_prevents_regression_pass(self):
         self.assert_post_workload_cleanup_fault(
             "cgroup_path_present",

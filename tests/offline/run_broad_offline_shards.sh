@@ -348,11 +348,15 @@ PY
           elif [ "${OFFLINE_TEST_MODE_A_CLEANUP_FAULT:-}" = terminal_identity_mismatch ] && [[ "$rel" = tests/offline/.harness-fixture-cleanup-* ]]; then
             printf 'Id=%s\nLoadState=loaded\nActiveState=inactive\nSubState=dead\nControlGroup=%s\nInvocationID=ffffffffffffffffffffffffffffffff\n' \
               "$scope_unit" "$scope_control_group" >"$terminal_snapshot_a"
+          elif [ "${OFFLINE_TEST_MODE_A_CLEANUP_FAULT:-}" = terminal_wrong_id_gone ] && [[ "$rel" = tests/offline/.harness-fixture-cleanup-* ]]; then
+            printf 'Id=wrong-unit.scope\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nControlGroup=\nInvocationID=\n' \
+              >"$terminal_snapshot_a"
           fi
           if ! python3 - "$terminal_snapshot_a" "$scope_unit" "$scope_invocation_id" "$scope_control_group" <<'PY'
 import sys
 d=dict(line.rstrip('\n').split('=',1) for line in open(sys.argv[1]) if '=' in line)
-if d.get('Id')==sys.argv[2] and d.get('LoadState')=='loaded' and \
+if d.get('Id')!=sys.argv[2]: raise SystemExit(0)
+if d.get('LoadState')=='loaded' and \
    (d.get('InvocationID')!=sys.argv[3] or d.get('ControlGroup')!=sys.argv[4]): raise SystemExit(0)
 raise SystemExit(1)
 PY
@@ -364,7 +368,7 @@ PY
 import sys
 d=dict(line.rstrip('\n').split('=',1) for line in open(sys.argv[1]) if '=' in line)
 same=(d.get('Id')==sys.argv[2] and d.get('InvocationID')==sys.argv[3] and d.get('ControlGroup')==sys.argv[4])
-gone=(d.get('LoadState')=='not-found' and d.get('ActiveState')=='inactive' and d.get('SubState')=='dead' and not d.get('InvocationID') and not d.get('ControlGroup'))
+gone=(d.get('Id')==sys.argv[2] and d.get('LoadState')=='not-found' and d.get('ActiveState')=='inactive' and d.get('SubState')=='dead' and not d.get('InvocationID') and not d.get('ControlGroup'))
 dead=(d.get('LoadState')=='loaded' and d.get('ActiveState')=='inactive' and d.get('SubState')=='dead' and same)
 raise SystemExit(0 if dead or gone else 1)
 PY
@@ -404,6 +408,9 @@ PY
       if [ "${OFFLINE_TEST_MODE_A_CLEANUP_FAULT:-}" = same_unit_reuse ] && [[ "$rel" = tests/offline/.harness-fixture-cleanup-* ]]; then
         printf 'Id=%s\nLoadState=loaded\nActiveState=active\nSubState=running\nControlGroup=/user.slice/reused/%s\nInvocationID=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n' \
           "$scope_unit" "$scope_unit" >"$terminal_snapshot_b"
+      elif [ "${OFFLINE_TEST_MODE_A_CLEANUP_FAULT:-}" = final_wrong_id_gone ] && [[ "$rel" = tests/offline/.harness-fixture-cleanup-* ]]; then
+        printf 'Id=wrong-unit.scope\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nControlGroup=\nInvocationID=\n' \
+          >"$terminal_snapshot_b"
       fi
       final_identity_json=$(python3 - "$terminal_snapshot_b" <<'PY'
 import json, sys
@@ -419,7 +426,7 @@ PY
 import sys
 d=dict(line.rstrip('\n').split('=',1) for line in open(sys.argv[1]) if '=' in line)
 same=(d.get('Id')==sys.argv[2] and d.get('InvocationID')==sys.argv[3] and d.get('ControlGroup')==sys.argv[4])
-gone=(d.get('LoadState')=='not-found' and d.get('ActiveState')=='inactive' and d.get('SubState')=='dead' and not d.get('InvocationID') and not d.get('ControlGroup'))
+gone=(d.get('Id')==sys.argv[2] and d.get('LoadState')=='not-found' and d.get('ActiveState')=='inactive' and d.get('SubState')=='dead' and not d.get('InvocationID') and not d.get('ControlGroup'))
 dead=(d.get('LoadState')=='loaded' and d.get('ActiveState')=='inactive' and d.get('SubState')=='dead' and same)
 raise SystemExit(0 if dead or gone else 1)
 PY
