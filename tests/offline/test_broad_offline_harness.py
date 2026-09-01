@@ -125,11 +125,39 @@ class OfflineHarnessBehaviorTests(unittest.TestCase):
         self.assertIn(relative, record["command"])
         self.assertIn("PRESERVED-SHARD-OUTPUT", "\n".join(outputs.values()))
 
+    def test_empty_explicit_shard_list_fails_closed(self):
+        result, manifest, _ = self.run_harness([], {})
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("zero shards", result.stdout.lower())
+        self.assertFalse(manifest)
+
+    def test_nonpositive_or_invalid_timeout_fails_before_shards(self):
+        relative = "tests/offline/.harness-fixture-timeout.py"
+        source = "import unittest\nif __name__ == '__main__': unittest.main()\n"
+        for value in ("0", "-1", "not-a-duration"):
+            with self.subTest(value=value):
+                result, manifest, _ = self.run_harness(
+                    [relative], {relative: source},
+                    extra_env={"OFFLINE_SHARD_TIMEOUT_SECONDS": value},
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("OFFLINE_SHARD_TIMEOUT_SECONDS", result.stdout)
+                self.assertFalse(manifest)
+
     def test_exit_zero_with_zero_tests_fails_closed(self):
         relative = "tests/offline/.harness-fixture-zero.py"
         result, manifest, _ = self.run_harness([relative], {relative: "print('no tests here')\n"})
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertEqual(manifest[0]["status"], "FAIL_ZERO_TESTS")
+        self.assertEqual(manifest[0]["executed_tests"], 0)
+
+    def test_python_output_cannot_forge_test_accounting(self):
+        relative = "tests/offline/.harness-fixture-forged-count.py"
+        source = "print('Ran 1 test')\n"
+        result, manifest, _ = self.run_harness([relative], {relative: source})
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(manifest[0]["status"], "FAIL_ZERO_TESTS")
+        self.assertEqual(manifest[0]["total_tests"], 0)
         self.assertEqual(manifest[0]["executed_tests"], 0)
 
     def test_exit_zero_with_only_skips_fails_closed(self):
@@ -154,6 +182,44 @@ class OfflineHarnessBehaviorTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertFalse(manifest)
                 self.assertIn("exact repo-relative path", result.stdout)
+
+    def test_rejects_symlink_shard_that_resolves_outside_repository(self):
+        relative = "tests/offline/.harness-fixture-escape.py"
+        with tempfile.TemporaryDirectory(prefix="offline-harness-outside-") as td:
+            outside = Path(td) / "outside.py"
+            outside.write_text("raise SystemExit('must not execute')\n")
+            link = ROOT / relative
+            link.symlink_to(outside)
+            try:
+                result, manifest, _ = self.run_harness([relative], {})
+            finally:
+                link.unlink(missing_ok=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("symlink", result.stdout.lower())
+        self.assertFalse(manifest)
+
+    def test_existing_manifest_symlink_is_rejected_without_truncating_target(self):
+        with tempfile.TemporaryDirectory(prefix="offline-harness-results-") as td:
+            temp = Path(td)
+            results = temp / "results"
+            results.mkdir()
+            target = temp / "sentinel.txt"
+            target.write_text("PRESERVE-ME")
+            (results / "manifest.jsonl").symlink_to(target)
+            shard_list = temp / "shards.txt"
+            shard_list.write_text("")
+            env = os.environ.copy()
+            env.update({
+                "OFFLINE_SHARD_LIST_FILE": str(shard_list),
+                "OFFLINE_RESULTS_DIR": str(results),
+                "OFFLINE_SKIP_FOCUSED": "1",
+            })
+            result = subprocess.run(
+                ["bash", str(HARNESS)], cwd=ROOT, env=env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(target.read_text(), "PRESERVE-ME")
 
     def test_missing_canary_dependency_is_tooling_error_not_network_block(self):
         env = os.environ.copy()

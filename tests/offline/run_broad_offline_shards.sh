@@ -23,8 +23,22 @@ FRESH_HOME="$(mktemp -d "$HARNESS_DIR/offline-home-XXXXXX")"
 RESULTS_DIR=${OFFLINE_RESULTS_DIR:-"$(mktemp -d -t omniroute-offline-results-XXXXXX)"}
 MANIFEST="$RESULTS_DIR/manifest.jsonl"
 trap 'rm -rf "$HARNESS_DIR"' EXIT
+if [ -L "$RESULTS_DIR" ]; then
+  echo "PREFLIGHT FAILURE: results directory must not be a symlink: $RESULTS_DIR"
+  exit 1
+fi
 mkdir -p "$RESULTS_DIR" "$FRESH_HOME/.cache" "$FRESH_HOME/.config" "$FRESH_HOME/.local/share" "$FRESH_HOME/tmp"
+if [ -e "$MANIFEST" ] || [ -L "$MANIFEST" ]; then
+  echo "PREFLIGHT FAILURE: manifest path already exists: $MANIFEST"
+  exit 1
+fi
 : >"$MANIFEST"
+
+SHARD_TIMEOUT=${OFFLINE_SHARD_TIMEOUT_SECONDS:-60}
+if [[ ! "$SHARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "PREFLIGHT FAILURE: OFFLINE_SHARD_TIMEOUT_SECONDS must be a positive integer."
+  exit 1
+fi
 
 printf '%s\n' "=== OFFLINE BROAD SHARD HARNESS ===" "Repo: $REPO_ROOT" \
   "Fresh HOME: $FRESH_HOME" "Results: $RESULTS_DIR"
@@ -116,7 +130,7 @@ fi
 
 if [ "${OFFLINE_SKIP_FOCUSED:-0}" != 1 ]; then
   echo "--- Running focused offline tests ---"
-  run_in_ns python3 "$REPO_ROOT/tests/offline/test_ssh_retry.py"
+  run_in_ns timeout "$SHARD_TIMEOUT" python3 "$REPO_ROOT/tests/offline/test_ssh_retry.py"
 fi
 
 validate_relative_path() {
@@ -131,6 +145,10 @@ validate_relative_path() {
   esac
   if [ ! -f "$REPO_ROOT/$rel" ]; then
     echo "ABORT: exact repo-relative shard does not exist: $rel"
+    exit 1
+  fi
+  if [ -L "$REPO_ROOT/$rel" ]; then
+    echo "ABORT: shard must not be a symlink: $rel"
     exit 1
   fi
 }
@@ -150,6 +168,11 @@ else
   )
 fi
 
+if [ "${#SHARDS[@]}" -eq 0 ]; then
+  echo "ABORT: zero shards selected; refusing to report success."
+  exit 1
+fi
+
 if [ "${#SHARDS[@]}" -gt 0 ] && [ -z "$NODE_BIN" ]; then
   for rel in "${SHARDS[@]}"; do
     case "$rel" in *.ts|*.mjs) echo "PREFLIGHT FAILURE: node is required for selected shards."; exit 1;; esac
@@ -163,28 +186,31 @@ for rel in "${SHARDS[@]}"; do
   safe_name=$(printf '%s' "$rel" | tr '/ ' '__' | tr -cd 'A-Za-z0-9_.-')
   output="$RESULTS_DIR/$(printf '%04d' "$INDEX")-$safe_name.log"
   if [[ "$rel" == *.py ]]; then
-    command=(python3 "$REPO_ROOT/$rel")
+    count_report="$RESULTS_DIR/$(printf '%04d' "$INDEX")-$safe_name.counts.json"
+    command=(python3 "$REPO_ROOT/tests/offline/run_python_unittest_shard.py" "$count_report" "$REPO_ROOT/$rel")
   else
+    count_report=""
     command=("$NODE_BIN" --import "$TSX_LOADER" --import "$REPO_ROOT/open-sse/utils/setupPolyfill.ts" --test "$REPO_ROOT/$rel")
   fi
   printf -v command_text '%q ' "${command[@]}"
   started_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
   set +e
-  run_in_ns timeout "${OFFLINE_SHARD_TIMEOUT_SECONDS:-60}" "${command[@]}" >"$output" 2>&1
+  run_in_ns timeout "$SHARD_TIMEOUT" "${command[@]}" >"$output" 2>&1
   exit_status=$?
   set -e
   ended_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
   duration_ms=$(((ended_ns - started_ns) / 1000000))
 
-  counts=$(python3 - "$output" "$rel" <<'PY'
-import re, sys
+  counts=$(python3 - "$output" "$rel" "$count_report" <<'PY'
+import json, re, sys
 text=open(sys.argv[1], errors='replace').read()
 if sys.argv[2].endswith('.py'):
-    m=re.search(r'Ran\s+(\d+)\s+tests?', text)
-    total=int(m.group(1)) if m else 0
-    skips=[int(x) for x in re.findall(r'skipped=(\d+)', text)]
-    skipped=skips[-1] if skips else 0
-    executed=max(0,total-skipped)
+    try:
+        with open(sys.argv[3], encoding='utf-8') as f: report=json.load(f)
+        total=int(report['total_tests']); executed=int(report['executed_tests']); skipped=int(report['skipped_tests'])
+        if min(total, executed, skipped) < 0 or executed + skipped != total: raise ValueError
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        total=executed=skipped=0
 else:
     def last(label):
         found=re.findall(rf'(?:^|\n)(?:ℹ|#)\s*{label}\s+(\d+)', text)
