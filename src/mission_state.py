@@ -136,22 +136,43 @@ class MissionState:
     def reconcile(
         self,
         evidence_dir: Path,
-        verification_token: Optional[str],
+        *,
+        expected_generation: int,
+        expected_version: Optional[str] = None,
     ) -> "MissionState":
-        """Verify authoritative evidence and a verification token, then promote
-        to the recovered state.  Fails closed if verification is insufficient."""
-        if verification_token is None:
-            raise ReconciliationRequiredError(
-                "Reconciliation failed: no verification token provided. "
-                "Insufficient evidence to promote RECOVERY_REQUIRED to "
-                "executable state."
+        """Verify authoritative evidence against concrete preconditions, then
+        promote RECOVERY_REQUIRED to the recovered state.
+
+        Authorization is derived from verifiable checks, NOT from opaque
+        caller-supplied strings:
+
+          - evidence_dir must contain valid JSON evidence files
+          - highest-generation evidence must match expected_generation
+          - evidence version must match expected_version (if provided)
+          - evidence must contain all required structural fields
+          - evidence target state must not be FINALIZED (terminal)
+          - this mission state must be RECOVERY_REQUIRED
+
+        Fails closed on any precondition mismatch.
+        """
+        # --- Verifiable authorization checks ---
+
+        # FINALIZED is terminal — cannot reconcile into or from it
+        if self.is_finalized():
+            raise FinalizedError(
+                "Cannot reconcile a FINALIZED mission state — "
+                "FINALIZED is terminal"
             )
+
         if self._state != "RECOVERY_REQUIRED":
             raise NonExecutableError(
                 "reconcile() is only applicable to RECOVERY_REQUIRED state"
             )
 
-        evidence_files = sorted(evidence_dir.glob("*.json")) if evidence_dir.exists() else []
+        # Require at least one evidence file
+        evidence_files = sorted(
+            evidence_dir.glob("*.json")
+        ) if evidence_dir.exists() else []
         if not evidence_files:
             raise ReconciliationRequiredError(
                 "Reconciliation failed: no authoritative evidence files "
@@ -176,12 +197,53 @@ class MissionState:
                 "Reconciliation failed: no valid evidence found"
             )
 
+        # --- Verifiable authorization checks ---
+
+        # 1. Evidence generation must match expected generation
+        if best_gen != expected_generation:
+            raise ReconciliationRequiredError(
+                f"Reconciliation failed: evidence generation {best_gen} "
+                f"does not match expected generation {expected_generation}"
+            )
+
+        # 2. Evidence version must match expected version (if provided)
+        if expected_version is not None:
+            evidence_version = best_data.get("version")
+            if evidence_version != expected_version:
+                raise ReconciliationRequiredError(
+                    f"Reconciliation failed: evidence version "
+                    f"{evidence_version!r} does not match expected version "
+                    f"{expected_version!r}"
+                )
+
+        # 3. Evidence must have required structural fields
+        for field in ("generation", "state"):
+            if field not in best_data:
+                raise ReconciliationRequiredError(
+                    f"Reconciliation failed: evidence missing required "
+                    f"field '{field}'"
+                )
+
+        # 4. Evidence target state must not be FINALIZED (terminal)
+        target_state = best_data["state"]
+        if target_state == "FINALIZED":
+            raise ReconciliationRequiredError(
+                "Reconciliation failed: evidence targets FINALIZED state, "
+                "which is terminal and cannot be reconciled into"
+            )
+
         # Promote from RECOVERY_REQUIRED to the evidence state
         promoted = self.with_updates(
             generation=best_data["generation"],
             state=best_data["state"],
-            metadata={"reconciled_from": "RECOVERY_REQUIRED",
-                       "reconciliation_token_verified": True},
+            metadata={
+                "reconciled_from": "RECOVERY_REQUIRED",
+                "reconciliation_verified_generation": best_gen,
+                "reconciliation_verified_version": best_data.get("version"),
+                "reconciliation_timestamp": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                ),
+            },
         )
         return promoted
 

@@ -27,7 +27,10 @@ from pathlib import Path
 
 # Import the module under test — must exist as src/mission_state.py
 from src.mission_state import (
+    FinalizedError,
     MissionState,
+    NonExecutableError,
+    ReconciliationRequiredError,
     load_or_create,
     save,
     recover,
@@ -92,8 +95,8 @@ class TestRecoveryWithNoEvidenceCreatesMinimalState(unittest.TestCase):
             self.assertIn("reconciliation", str(ctx2.exception).lower())
 
             # Attempt via explicit reconcile with no evidence — must fail closed
-            with self.assertRaises(Exception) as ctx3:
-                ms.reconcile(evidence_dir, verification_token=None)
+            with self.assertRaises(ReconciliationRequiredError) as ctx3:
+                ms.reconcile(evidence_dir, expected_generation=1)
             self.assertIn("reconciliation", str(ctx3.exception).lower())
 
             # On-disk state must remain RECOVERY_REQUIRED / not executable
@@ -241,6 +244,179 @@ class TestStaleGenerationCannotOverwriteFinalizedOrHigher(unittest.TestCase):
             # State unchanged
             final = MissionState.load(state_path)
             self.assertTrue(final.is_finalized())
+
+
+class TestReconciliationSecurity(unittest.TestCase):
+    """Reconciliation must be authorized by verifiable evidence preconditions,
+    NOT by an opaque caller-supplied string.  The old verification_token
+    parameter was a pseudo-auth defect: any non-null string passed.
+
+    New contract: reconcile() requires expected_generation (int) and optional
+    expected_version (str).  The function derives authorization from concrete
+    checks against the evidence, not from caller-provided opaque values."""
+
+    def _recovery_state(self, td):
+        state_path = Path(td) / "mission-state.json"
+        ms = MissionState.create(generation=1, state="RECOVERY_REQUIRED")
+        ms.save(state_path)
+        return ms
+
+    def _evidence_dir(self, td, evidence_dict):
+        evidence_dir = Path(td) / "evidence"
+        evidence_dir.mkdir(exist_ok=True)
+        (evidence_dir / "authoritative.json").write_text(
+            json.dumps(evidence_dict)
+        )
+        return evidence_dir
+
+    # --- RED: arbitrary opaque strings must NOT authorize ---
+
+    def test_fake_string_cannot_authorize(self):
+        """'fake' as a verification_token must not be accepted.
+        The old interface accepted it; the new one rejects it."""
+        with tempfile.TemporaryDirectory() as td:
+            ms = self._recovery_state(td)
+            evidence_dir = self._evidence_dir(td, {
+                "generation": 2, "state": "running", "version": "v1",
+            })
+            with self.assertRaises((ReconciliationRequiredError, TypeError)):
+                ms.reconcile(evidence_dir, verification_token="fake")
+
+    def test_abc_string_cannot_authorize(self):
+        """'abc' as a verification_token must not be accepted."""
+        with tempfile.TemporaryDirectory() as td:
+            ms = self._recovery_state(td)
+            evidence_dir = self._evidence_dir(td, {
+                "generation": 2, "state": "running", "version": "v1",
+            })
+            with self.assertRaises((ReconciliationRequiredError, TypeError)):
+                ms.reconcile(evidence_dir, verification_token="abc")
+
+    def test_anything_string_cannot_authorize(self):
+        """'anything' as a verification_token must not be accepted."""
+        with tempfile.TemporaryDirectory() as td:
+            ms = self._recovery_state(td)
+            evidence_dir = self._evidence_dir(td, {
+                "generation": 2, "state": "running", "version": "v1",
+            })
+            with self.assertRaises((ReconciliationRequiredError, TypeError)):
+                ms.reconcile(evidence_dir, verification_token="anything")
+
+    # --- RED: wrong mission identity / generation must not reconcile ---
+
+    def test_wrong_expected_generation_rejects(self):
+        """Evidence with generation=3 must not reconcile when
+        expected_generation=5."""
+        with tempfile.TemporaryDirectory() as td:
+            ms = self._recovery_state(td)
+            evidence_dir = self._evidence_dir(td, {
+                "generation": 3, "state": "running", "version": "v1",
+            })
+            with self.assertRaises(ReconciliationRequiredError):
+                ms.reconcile(evidence_dir, expected_generation=5)
+
+    def test_wrong_expected_version_rejects(self):
+        """Evidence with version='v1' must not reconcile when
+        expected_version='v2'."""
+        with tempfile.TemporaryDirectory() as td:
+            ms = self._recovery_state(td)
+            evidence_dir = self._evidence_dir(td, {
+                "generation": 2, "state": "running", "version": "v1",
+            })
+            with self.assertRaises(ReconciliationRequiredError):
+                ms.reconcile(evidence_dir, expected_generation=2,
+                             expected_version="v2")
+
+    def test_mismatched_evidence_hash_rejects(self):
+        """Evidence missing required structural fields must be rejected."""
+        with tempfile.TemporaryDirectory() as td:
+            ms = self._recovery_state(td)
+            evidence_dir = Path(td) / "evidence"
+            evidence_dir.mkdir()
+            # Evidence with no 'state' field
+            (evidence_dir / "bad.json").write_text(json.dumps({
+                "generation": 2, "version": "v1",
+            }))
+            with self.assertRaises(ReconciliationRequiredError):
+                ms.reconcile(evidence_dir, expected_generation=2)
+
+    def test_mismatched_provenance_rejects(self):
+        """Evidence whose generation doesn't match the expected provenance
+        must be rejected even if version matches."""
+        with tempfile.TemporaryDirectory() as td:
+            ms = self._recovery_state(td)
+            evidence_dir = self._evidence_dir(td, {
+                "generation": 4, "state": "running", "version": "v1",
+            })
+            # We expect generation=2 but evidence has generation=4
+            with self.assertRaises(ReconciliationRequiredError):
+                ms.reconcile(evidence_dir, expected_generation=2)
+
+    # --- GREEN: valid reconciliation must succeed ---
+
+    def test_valid_reconciliation_promotes(self):
+        """Correct evidence with matching generation promotes
+        RECOVERY_REQUIRED to executable."""
+        with tempfile.TemporaryDirectory() as td:
+            ms = self._recovery_state(td)
+            evidence_dir = self._evidence_dir(td, {
+                "generation": 3, "state": "running", "version": "v1",
+            })
+            promoted = ms.reconcile(evidence_dir, expected_generation=3)
+            self.assertEqual(promoted.state, "running")
+            self.assertTrue(promoted.executable)
+            self.assertEqual(promoted.generation, 3)
+            self.assertIn("reconciled_from", promoted.metadata)
+            self.assertEqual(
+                promoted.metadata["reconciled_from"], "RECOVERY_REQUIRED"
+            )
+
+    def test_valid_reconciliation_with_version_check(self):
+        """Evidence with matching generation AND version succeeds."""
+        with tempfile.TemporaryDirectory() as td:
+            ms = self._recovery_state(td)
+            evidence_dir = self._evidence_dir(td, {
+                "generation": 2, "state": "running", "version": "abc123",
+            })
+            promoted = ms.reconcile(
+                evidence_dir, expected_generation=2,
+                expected_version="abc123"
+            )
+            self.assertEqual(promoted.state, "running")
+            self.assertTrue(promoted.executable)
+
+    # --- FINALIZED remains terminal ---
+
+    def test_finalized_remains_terminal_through_reconciliation(self):
+        """FINALIZED state must remain terminal even when otherwise-valid
+        reconciliation evidence is presented."""
+        with tempfile.TemporaryDirectory() as td:
+            # Create a FINALIZED state
+            finalized_path = Path(td) / "finalized-state.json"
+            ms = MissionState.create(
+                generation=5, state="FINALIZED"
+            )
+            ms.save(finalized_path)
+            self.assertTrue(ms.is_finalized())
+
+            evidence_dir = self._evidence_dir(td, {
+                "generation": 6, "state": "running", "version": "v1",
+            })
+
+            # FINALIZED state itself cannot be reconciled
+            with self.assertRaises(FinalizedError):
+                ms.reconcile(evidence_dir, expected_generation=6)
+
+    def test_evidence_targeting_finalized_state_is_rejected(self):
+        """Even valid evidence whose target state is FINALIZED must be
+        rejected — you cannot reconcile INTO a terminal state."""
+        with tempfile.TemporaryDirectory() as td:
+            ms = self._recovery_state(td)
+            evidence_dir = self._evidence_dir(td, {
+                "generation": 2, "state": "FINALIZED", "version": "v1",
+            })
+            with self.assertRaises(ReconciliationRequiredError):
+                ms.reconcile(evidence_dir, expected_generation=2)
 
 
 if __name__ == "__main__":
