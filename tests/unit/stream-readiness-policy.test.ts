@@ -249,3 +249,54 @@ test("treats unknown provider names as non-Claude-format (no false positives)", 
   assert.equal(result.timeoutMs, 80_000);
   assert.ok(!result.reasons.includes("claude_format_heavy_reasoning"));
 });
+
+test("gives tool-heavy Local Qwen additional readiness budget", () => {
+  const result = resolveStreamReadinessTimeout({
+    baseTimeoutMs: 80_000,
+    provider: "openai",
+    model: "qwen/qwen3.5-9b",
+    body: { messages: items(2), tools: tools(20) },
+  });
+
+  assert.equal(result.timeoutMs, 155_000);
+  assert.ok(result.reasons.includes("tool_heavy"));
+  assert.ok(result.reasons.includes("openai_qwen35_tool_heavy"));
+});
+
+test("does not bump Local Qwen when request is not tool-heavy", () => {
+  const result = resolveStreamReadinessTimeout({
+    baseTimeoutMs: 80_000,
+    provider: "openai",
+    model: "qwen/qwen3.5-9b",
+    body: { messages: items(2), tools: tools(2) },
+  });
+
+  assert.equal(result.timeoutMs, 80_000);
+  assert.deepEqual(result.reasons, ["base"]);
+});
+
+test("does not apply Local Qwen bump to unrelated OpenAI models", () => {
+  const result = resolveStreamReadinessTimeout({
+    baseTimeoutMs: 80_000,
+    provider: "openai",
+    model: "gpt-4.1",
+    body: { messages: items(2), tools: tools(20) },
+  });
+
+  assert.equal(result.timeoutMs, 95_000);
+  assert.ok(result.reasons.includes("tool_heavy"));
+  assert.ok(!result.reasons.includes("openai_qwen35_tool_heavy"));
+});
+
+test("caps tool-heavy Local Qwen readiness at supplied maximum", () => {
+  const result = resolveStreamReadinessTimeout({
+    baseTimeoutMs: 80_000,
+    maxTimeoutMs: 120_000,
+    provider: "openai",
+    model: "qwen/qwen3.5-9b",
+    body: { messages: items(2), tools: tools(20) },
+  });
+
+  assert.equal(result.timeoutMs, 120_000);
+  assert.ok(result.reasons.includes("openai_qwen35_tool_heavy"));
+});

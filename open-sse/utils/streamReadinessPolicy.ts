@@ -95,6 +95,12 @@ function isHighReasoningEffort(
   return effort.toLowerCase() === "high";
 }
 
+function isOpenAiQwen35(provider?: string | null, model?: string | null): boolean {
+  const normalizedProvider = (provider || "").toLowerCase();
+  const normalizedModel = (model || "").toLowerCase();
+  return normalizedProvider === "openai" && normalizedModel === "qwen/qwen3.5-9b";
+}
+
 export function resolveStreamReadinessTimeout(
   input: StreamReadinessPolicyInput
 ): StreamReadinessPolicyResult {
@@ -160,6 +166,14 @@ export function resolveStreamReadinessTimeout(
   if (isClaudeFormatReasoningProvider(input.provider) && !codexHighReasoning) {
     timeoutMs += 30_000;
     reasons.push("claude_format_heavy_reasoning");
+  }
+
+  // Local Qwen can legitimately take longer to emit its first useful SSE event
+  // on Hermes-style tool-heavy requests. Keep this narrowly scoped so remote
+  // OpenAI-compatible providers retain the normal readiness budget.
+  if (isOpenAiQwen35(input.provider, input.model) && toolCount >= TOOL_HEAVY_THRESHOLD) {
+    timeoutMs += 60_000;
+    reasons.push("openai_qwen35_tool_heavy");
   }
 
   timeoutMs = Math.min(timeoutMs, maxTimeoutMs);
