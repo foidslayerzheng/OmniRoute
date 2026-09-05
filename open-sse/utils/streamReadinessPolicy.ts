@@ -172,7 +172,7 @@ export function resolveStreamReadinessTimeout(
   // on Hermes-style tool-heavy requests. Keep this narrowly scoped so remote
   // OpenAI-compatible providers retain the normal readiness budget.
   if (isOpenAiQwen35(input.provider, input.model) && toolCount >= TOOL_HEAVY_THRESHOLD) {
-    timeoutMs += 60_000;
+    timeoutMs += 85_000;
     reasons.push("openai_qwen35_tool_heavy");
   }
 

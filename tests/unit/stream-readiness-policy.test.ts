@@ -258,7 +258,7 @@ test("gives tool-heavy Local Qwen additional readiness budget", () => {
     body: { messages: items(2), tools: tools(20) },
   });
 
-  assert.equal(result.timeoutMs, 155_000);
+  assert.equal(result.timeoutMs, 180_000);
   assert.ok(result.reasons.includes("tool_heavy"));
   assert.ok(result.reasons.includes("openai_qwen35_tool_heavy"));
 });
