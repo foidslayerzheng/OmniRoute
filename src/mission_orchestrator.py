@@ -15,9 +15,13 @@ caller-controlled opaque strings.
 
 from __future__ import annotations
 
+import copy
+import fcntl
 import json
+import os
 import platform
 import socket
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -57,6 +61,22 @@ class ProviderInterruption(Exception):
 
 class TransactionRolledBack(Exception):
     """Raised when a transactional operation is rolled back."""
+
+
+class MutationGuardError(Exception):
+    """Raised when pre-mutation safety requirements are not satisfied."""
+
+
+class CheckpointError(Exception):
+    """Raised when durable checkpoint validation fails."""
+
+
+class ReportingError(Exception):
+    """Raised when post-work reporting fails after state is safely advanced."""
+
+
+class DuplicateMutationError(Exception):
+    """Raised when a mutation id has already been claimed."""
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +130,7 @@ class TaskContract:
         self._created_at = created_at or time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
         )
-        self._metadata = dict(metadata) if metadata else {}
+        self._metadata = copy.deepcopy(metadata) if metadata else {}
 
     @property
     def task_id(self) -> str:
@@ -138,7 +158,7 @@ class TaskContract:
 
     @property
     def metadata(self) -> Dict[str, Any]:
-        return dict(self._metadata)
+        return copy.deepcopy(self._metadata)
 
     def verify_host(self, current_host_id: str) -> bool:
         """Check that the running host matches the expected host."""
@@ -152,7 +172,7 @@ class TaskContract:
             "host_id": self._host_id,
             "expected_host": self._expected_host,
             "created_at": self._created_at,
-            "metadata": dict(self._metadata),
+            "metadata": copy.deepcopy(self._metadata),
         }
 
     @classmethod
@@ -427,6 +447,54 @@ class MissionOrchestrator:
         self._persist()
         return self._state
 
+    def run_phase(
+        self,
+        phase_name: str,
+        operation: Callable[[], Any],
+        *,
+        reporter: Optional[Callable[[Any], None]] = None,
+        retry_safe: bool = False,
+    ) -> Any:
+        """Run one phase and automatically advance back to ACTIVE on success.
+
+        Reporting happens only after durable phase completion. If reporting
+        fails, completed work is never regressed to RECOVERY_REQUIRED.
+        """
+        self.begin_phase(phase_name)
+
+        result = self.execute_with_retry(
+            operation,
+            phase_name=phase_name,
+            retry_safe=retry_safe,
+        )
+
+        # Commit successful work before any non-authoritative reporting.
+        self.complete_phase()
+
+        if reporter is not None:
+            try:
+                reporter(result)
+            except Exception as exc:
+                # Reporting is observational; it must never roll back or
+                # regress successfully completed mission state.
+                try:
+                    self.write_evidence(
+                        f"reporting-failure-{int(time.time() * 1000)}",
+                        {
+                            "phase_name": phase_name,
+                            "generation": self._state.generation,
+                            "state": self._state.state,
+                            "error": str(exc),
+                        },
+                    )
+                finally:
+                    raise ReportingError(
+                        f"Phase '{phase_name}' completed, but reporting failed: "
+                        f"{exc}"
+                    ) from exc
+
+        return result
+
     def finalize(self, reason: str = "mission complete") -> MissionState:
         """Transition any executable state -> FINALIZED.
 
@@ -451,6 +519,178 @@ class MissionOrchestrator:
         self._persist()
         return self._state
 
+    # --- Pre-mutation guards ---
+
+    def verify_mutation_preconditions(self, *, repo_path: Path) -> None:
+        """Fail closed before any externally mutating operation.
+
+        The Universal Task Contract must contain metadata["mutation_guard"]:
+          repo_path: exact authorized repository path
+          sha: exact authorized Git commit
+          service: required active user-systemd service
+          approved: explicit boolean approval
+
+        No mutation is permitted if any requirement is missing or mismatched.
+        """
+        self._ensure_loaded()
+        self._ensure_not_finalized()
+        self.verify_host()
+
+        if self._contract is None:
+            raise MutationGuardError("No task contract loaded")
+
+        guard = self._contract.metadata.get("mutation_guard")
+        if not isinstance(guard, dict):
+            raise MutationGuardError("mutation_guard is required")
+
+        expected_path = guard.get("repo_path")
+        expected_sha = guard.get("sha")
+        required_service = guard.get("service")
+        approved = guard.get("approved")
+
+        if not isinstance(expected_path, str) or not expected_path:
+            raise MutationGuardError("mutation_guard.repo_path is required")
+        if not isinstance(expected_sha, str) or not expected_sha:
+            raise MutationGuardError("mutation_guard.sha is required")
+        if not isinstance(required_service, str) or not required_service:
+            raise MutationGuardError("mutation_guard.service is required")
+        if approved is not True:
+            raise MutationGuardError("mutation is not explicitly approved")
+
+        actual_path = repo_path.expanduser().resolve()
+        authorized_path = Path(expected_path).expanduser().resolve()
+
+        if actual_path != authorized_path:
+            raise MutationGuardError(
+                f"Wrong repository path: expected '{authorized_path}', "
+                f"got '{actual_path}'"
+            )
+
+        git_check = subprocess.run(
+            ["git", "-C", str(actual_path), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if git_check.returncode != 0:
+            raise MutationGuardError(
+                f"Cannot verify Git SHA for '{actual_path}'"
+            )
+
+        actual_sha = git_check.stdout.strip()
+        if actual_sha != expected_sha:
+            raise MutationGuardError(
+                f"Wrong Git SHA: expected '{expected_sha}', "
+                f"got '{actual_sha}'"
+            )
+
+        service_check = subprocess.run(
+            ["systemctl", "--user", "is-active", required_service],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if (
+            service_check.returncode != 0
+            or service_check.stdout.strip() != "active"
+        ):
+            raise MutationGuardError(
+                f"Required service '{required_service}' is not active"
+            )
+
+    def execute_mutation(
+        self,
+        operation: Callable[[], Any],
+        *,
+        repo_path: Path,
+        mutation_id: str,
+        phase_name: str = "mutation",
+        retry_safe: bool = False,
+    ) -> Any:
+        """Execute a guarded mutation at most once per durable mutation id.
+
+        The receipt is written before the operation begins. If execution or
+        transport becomes ambiguous, a restart sees the existing receipt and
+        refuses to replay the mutation automatically.
+        """
+        self.verify_mutation_preconditions(repo_path=repo_path)
+
+        if (
+            not mutation_id
+            or "/" in mutation_id
+            or "\\" in mutation_id
+            or mutation_id in {".", ".."}
+        ):
+            raise DuplicateMutationError("Invalid mutation_id")
+
+        if self._contract is None or self._state is None:
+            raise DuplicateMutationError("Mission contract/state not loaded")
+
+        receipts_dir = self._evidence_dir / "mutation-receipts"
+        receipts_dir.mkdir(parents=True, exist_ok=True)
+        receipt_path = receipts_dir / f"{mutation_id}.json"
+
+        receipt = {
+            "mutation_id": mutation_id,
+            "task_id": self._contract.task_id,
+            "phase_name": phase_name,
+            "generation": self._state.generation,
+            "status": "started",
+        }
+
+        # O_EXCL makes claiming the mutation id atomic across processes.
+        try:
+            fd = os.open(
+                str(receipt_path),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError as exc:
+            raise DuplicateMutationError(
+                f"Mutation '{mutation_id}' has already been claimed"
+            ) from exc
+
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(receipt, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+
+            dir_fd = os.open(str(receipts_dir), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except Exception:
+            # A partially created claim must still block replay. Fail closed.
+            raise
+
+        result = self.execute_with_retry(
+            operation,
+            phase_name=phase_name,
+            retry_safe=retry_safe,
+        )
+
+        completed = {
+            **receipt,
+            "status": "completed",
+        }
+        tmp = receipt_path.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(completed, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+
+        os.replace(tmp, receipt_path)
+
+        dir_fd = os.open(str(receipts_dir), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+        return result
+
     # --- Bounded retry ---
 
     def execute_with_retry(
@@ -458,6 +698,7 @@ class MissionOrchestrator:
         operation: Callable[[], Any],
         *,
         phase_name: str = "operation",
+        retry_safe: bool = False,
     ) -> Any:
         """Execute an operation with bounded retry and exponential backoff.
 
@@ -481,6 +722,22 @@ class MissionOrchestrator:
                 return result
             except Exception as exc:
                 last_error = exc
+
+                # A mutating operation is ambiguous after transport/provider
+                # failure: it may have committed remotely even though no
+                # response was received. Never repeat it unless the caller
+                # explicitly declares the operation retry-safe/idempotent.
+                if not retry_safe:
+                    self._handle_provider_interruption(
+                        phase_name,
+                        f"ambiguous operation result: {exc}",
+                    )
+                    raise BoundedRetryExhausted(
+                        f"Operation '{phase_name}' failed with an ambiguous "
+                        f"result and was not retried because retry_safe=False: "
+                        f"{exc}"
+                    ) from exc
+
                 if attempt < self._max_retries:
                     backoff = min(
                         self._base_backoff_s * (2 ** (attempt - 1)),
@@ -514,6 +771,177 @@ class MissionOrchestrator:
             },
         )
         self._persist()
+
+    # --- Durable checkpoint / resume ---
+
+    def write_checkpoint(
+        self,
+        checkpoint_name: str,
+        data: Dict[str, Any],
+    ) -> Path:
+        """Persist an idempotent checkpoint for the exact current generation.
+
+        Writes are serialized across processes. Identical rewrites are
+        idempotent; conflicting same-generation or future-generation
+        checkpoints fail closed.
+        """
+        self._ensure_loaded()
+        self._ensure_not_finalized()
+        self.verify_host()
+
+        if self._contract is None or self._state is None:
+            raise CheckpointError("Mission contract/state not loaded")
+
+        if (
+            not checkpoint_name
+            or "/" in checkpoint_name
+            or "\\" in checkpoint_name
+            or checkpoint_name in {".", ".."}
+        ):
+            raise CheckpointError("Invalid checkpoint name")
+
+        self._evidence_dir.mkdir(parents=True, exist_ok=True)
+        path = self._evidence_dir / f"checkpoint-{checkpoint_name}.json"
+        lock_path = self._evidence_dir / f".checkpoint-{checkpoint_name}.lock"
+
+        payload = {
+            "task_id": self._contract.task_id,
+            "generation": self._state.generation,
+            "state": self._state.state,
+            "data": data,
+        }
+
+        lock_fd = os.open(
+            str(lock_path),
+            os.O_RDWR | os.O_CREAT,
+            0o600,
+        )
+
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+            if path.exists():
+                try:
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise CheckpointError(
+                        f"Existing checkpoint '{checkpoint_name}' is unreadable"
+                    ) from exc
+
+                if existing.get("task_id") != self._contract.task_id:
+                    raise CheckpointError(
+                        "Checkpoint task_id does not match mission"
+                    )
+
+                existing_generation = existing.get("generation")
+                if type(existing_generation) is not int:
+                    raise CheckpointError(
+                        "Existing checkpoint generation is invalid"
+                    )
+
+                if existing == payload:
+                    return path
+
+                if existing_generation == self._state.generation:
+                    raise CheckpointError(
+                        "Conflicting checkpoint already exists for current "
+                        f"generation {self._state.generation}"
+                    )
+
+                if existing_generation > self._state.generation:
+                    raise CheckpointError(
+                        "Refusing to overwrite future checkpoint generation "
+                        f"{existing_generation} with stale generation "
+                        f"{self._state.generation}"
+                    )
+
+            # Unique temporary file prevents concurrent writers from sharing
+            # the same staging pathname.
+            tmp = self._evidence_dir / (
+                f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+            )
+
+            try:
+                with tmp.open("x", encoding="utf-8") as fh:
+                    json.dump(payload, fh, indent=2)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+
+                os.replace(tmp, path)
+            finally:
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+
+            # Durably persist the directory entry.
+            dir_fd = os.open(str(self._evidence_dir), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+
+            return path
+        finally:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
+
+    def resume_checkpoint(
+        self,
+        checkpoint_name: str,
+    ) -> Dict[str, Any]:
+        """Return checkpoint payload only if it matches authoritative state.
+
+        A stale or future checkpoint is rejected rather than replayed.
+        """
+        self._ensure_loaded()
+        self._ensure_not_finalized()
+        self.verify_host()
+
+        if self._contract is None or self._state is None:
+            raise CheckpointError("Mission contract/state not loaded")
+
+        if (
+            not checkpoint_name
+            or "/" in checkpoint_name
+            or "\\" in checkpoint_name
+            or checkpoint_name in {".", ".."}
+        ):
+            raise CheckpointError("Invalid checkpoint name")
+
+        path = self._evidence_dir / f"checkpoint-{checkpoint_name}.json"
+        if not path.exists():
+            raise CheckpointError(
+                f"Checkpoint '{checkpoint_name}' does not exist"
+            )
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise CheckpointError(
+                f"Checkpoint '{checkpoint_name}' is unreadable"
+            ) from exc
+
+        if payload.get("task_id") != self._contract.task_id:
+            raise CheckpointError("Checkpoint task_id does not match mission")
+
+        if payload.get("generation") != self._state.generation:
+            raise CheckpointError(
+                "Checkpoint generation does not match authoritative state"
+            )
+
+        if payload.get("state") != self._state.state:
+            raise CheckpointError(
+                "Checkpoint state does not match authoritative state"
+            )
+
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise CheckpointError("Checkpoint data must be an object")
+
+        return dict(data)
 
     # --- Transactional operations ---
 

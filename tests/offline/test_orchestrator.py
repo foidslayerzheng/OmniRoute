@@ -22,6 +22,10 @@ from unittest.mock import patch
 from src.mission_orchestrator import (
     BoundedRetryExhausted,
     MissionOrchestrator,
+    MutationGuardError,
+    CheckpointError,
+    ReportingError,
+    DuplicateMutationError,
     TaskContract,
     TaskContractError,
     WrongHostError,
@@ -85,34 +89,49 @@ class TestUniversalTaskContract(unittest.TestCase):
             self.assertTrue(loaded.verify_host("lois"))
 
 
+    def test_contract_nested_metadata_cannot_be_mutated_by_caller(self):
+        """Nested safety metadata must remain immutable from caller aliases."""
+        original = {
+            "mutation_guard": {
+                "approved": False,
+                "sha": "expected-sha",
+            }
+        }
+
+        contract = TaskContract(
+            task_id="immutable-metadata",
+            description="immutability test",
+            owner="louis",
+            host_id="lois",
+            expected_host="lois",
+            metadata=original,
+        )
+
+        # Mutating the object originally supplied to the constructor
+        # must not change the contract.
+        original["mutation_guard"]["approved"] = True
+        self.assertFalse(
+            contract.metadata["mutation_guard"]["approved"]
+        )
+
+        # Mutating a value returned from the property must not change it.
+        exposed = contract.metadata
+        exposed["mutation_guard"]["approved"] = True
+        self.assertFalse(
+            contract.metadata["mutation_guard"]["approved"]
+        )
+
+        # Same guarantee for to_dict().
+        serialized = contract.to_dict()
+        serialized["metadata"]["mutation_guard"]["approved"] = True
+        self.assertFalse(
+            contract.metadata["mutation_guard"]["approved"]
+        )
+
+
 class TestWrongHostEnforcement(unittest.TestCase):
     """Mission must refuse to execute on wrong host."""
 
-    def test_wrong_host_rejected_on_startup(self):
-        """If expected_host != running host, startup must fail."""
-        with tempfile.TemporaryDirectory() as td:
-            orch = MissionOrchestrator(
-                state_path=Path(td) / "state.json",
-                evidence_dir=Path(td) / "evidence",
-            )
-            # Create mission on current host
-            orch.create_mission(
-                description="Wrong-host test",
-                owner="louis",
-            )
-            # Tamper: change expected_host in contract
-            contract = TaskContract.load(Path(td) / "state.contract.json")
-            contract._expected_host = "wrong-host"
-            contract.save(Path(td) / "state.contract.json")
-
-            # Startup in new orchestrator — should fail
-            orch2 = MissionOrchestrator(
-                state_path=Path(td) / "state.json",
-                evidence_dir=Path(td) / "evidence",
-                contract_path=Path(td) / "state.contract.json",
-            )
-            with self.assertRaises(WrongHostError):
-                orch2.startup()
 
     def test_wrong_host_rejected_on_startup(self):
         """If expected_host != running host, startup must fail."""
@@ -195,7 +214,7 @@ class TestBoundedRetry(unittest.TestCase):
             orch.activate()
 
             with self.assertRaises(BoundedRetryExhausted):
-                orch.execute_with_retry(flaky)
+                orch.execute_with_retry(flaky, retry_safe=True)
 
             # All 3 attempts should have been made
             self.assertEqual(call_count[0], 3)
@@ -226,6 +245,363 @@ class TestBoundedRetry(unittest.TestCase):
             self.assertEqual(meta["recovery_reason"], "provider_interruption")
             self.assertEqual(meta["failed_phase"], "operation")
             self.assertIn("error_message", meta)
+
+
+    def test_ambiguous_mutation_is_not_retried(self):
+        """An ambiguous mutating operation must not be executed twice."""
+        with tempfile.TemporaryDirectory() as td:
+            orch = MissionOrchestrator(
+                state_path=Path(td) / "state.json",
+                evidence_dir=Path(td) / "evidence",
+                max_retries=3,
+                base_backoff_s=0,
+            )
+            orch.create_mission(
+                description="ambiguous mutation",
+                owner="louis",
+            )
+            orch.activate()
+
+            calls = {"count": 0}
+
+            def ambiguous_mutation():
+                calls["count"] += 1
+                raise ConnectionError("response lost after mutation")
+
+            with self.assertRaises(BoundedRetryExhausted):
+                orch.execute_with_retry(
+                    ambiguous_mutation,
+                    phase_name="remote-mutation",
+                )
+
+            self.assertEqual(calls["count"], 1)
+            self.assertEqual(orch.state.state, "RECOVERY_REQUIRED")
+
+
+class TestMutationPreconditions(unittest.TestCase):
+    """Mutations must fail closed before the operation is invoked."""
+
+    def _make_orchestrator(self, td, *, guard):
+        repo = Path(td) / "repo"
+        repo.mkdir()
+
+        orch = MissionOrchestrator(
+            state_path=Path(td) / "state.json",
+            evidence_dir=Path(td) / "evidence",
+        )
+        orch.create_mission(
+            description="guarded mutation",
+            owner="louis",
+            metadata={"mutation_guard": guard},
+        )
+        orch.activate()
+        return orch, repo
+
+    def test_mutation_rejects_missing_approval_before_operation(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            guard = {
+                "repo_path": str(repo),
+                "sha": "abc123",
+                "service": "omniroute.service",
+                "approved": False,
+            }
+            orch, repo = self._make_orchestrator(td, guard=guard)
+
+            calls = {"count": 0}
+
+            def mutation():
+                calls["count"] += 1
+
+            with self.assertRaises(MutationGuardError):
+                orch.execute_mutation(mutation, repo_path=repo, mutation_id="guard-test")
+
+            self.assertEqual(calls["count"], 0)
+
+    def test_mutation_rejects_wrong_repo_path_before_operation(self):
+        with tempfile.TemporaryDirectory() as td:
+            authorized = Path(td) / "authorized"
+            actual = Path(td) / "actual"
+            authorized.mkdir()
+            actual.mkdir()
+
+            orch = MissionOrchestrator(
+                state_path=Path(td) / "state.json",
+                evidence_dir=Path(td) / "evidence",
+            )
+            orch.create_mission(
+                description="wrong path",
+                owner="louis",
+                metadata={
+                    "mutation_guard": {
+                        "repo_path": str(authorized),
+                        "sha": "abc123",
+                        "service": "omniroute.service",
+                        "approved": True,
+                    }
+                },
+            )
+            orch.activate()
+
+            calls = {"count": 0}
+
+            def mutation():
+                calls["count"] += 1
+
+            with self.assertRaises(MutationGuardError):
+                orch.execute_mutation(mutation, repo_path=actual, mutation_id="guard-test")
+
+            self.assertEqual(calls["count"], 0)
+
+    def test_mutation_rejects_wrong_sha_before_operation(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            guard = {
+                "repo_path": str(repo),
+                "sha": "expected-sha",
+                "service": "omniroute.service",
+                "approved": True,
+            }
+            orch, repo = self._make_orchestrator(td, guard=guard)
+
+            git_result = type("R", (), {
+                "returncode": 0,
+                "stdout": "different-sha\n",
+            })()
+
+            calls = {"count": 0}
+
+            with patch(
+                "src.mission_orchestrator.subprocess.run",
+                return_value=git_result,
+            ):
+                with self.assertRaises(MutationGuardError):
+                    orch.execute_mutation(
+                        lambda: calls.__setitem__(
+                            "count", calls["count"] + 1
+                        ),
+                        repo_path=repo,
+                        mutation_id="guard-test",
+                    )
+
+            self.assertEqual(calls["count"], 0)
+
+    def test_mutation_rejects_inactive_service_before_operation(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            guard = {
+                "repo_path": str(repo),
+                "sha": "expected-sha",
+                "service": "omniroute.service",
+                "approved": True,
+            }
+            orch, repo = self._make_orchestrator(td, guard=guard)
+
+            git_ok = type("R", (), {
+                "returncode": 0,
+                "stdout": "expected-sha\n",
+            })()
+            service_bad = type("R", (), {
+                "returncode": 3,
+                "stdout": "inactive\n",
+            })()
+
+            calls = {"count": 0}
+
+            with patch(
+                "src.mission_orchestrator.subprocess.run",
+                side_effect=[git_ok, service_bad],
+            ):
+                with self.assertRaises(MutationGuardError):
+                    orch.execute_mutation(
+                        lambda: calls.__setitem__(
+                            "count", calls["count"] + 1
+                        ),
+                        repo_path=repo,
+                        mutation_id="guard-test",
+                    )
+
+            self.assertEqual(calls["count"], 0)
+
+    def test_valid_mutation_guard_executes_operation_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            guard = {
+                "repo_path": str(repo),
+                "sha": "expected-sha",
+                "service": "omniroute.service",
+                "approved": True,
+            }
+            orch, repo = self._make_orchestrator(td, guard=guard)
+
+            git_ok = type("R", (), {
+                "returncode": 0,
+                "stdout": "expected-sha\n",
+            })()
+            service_ok = type("R", (), {
+                "returncode": 0,
+                "stdout": "active\n",
+            })()
+
+            calls = {"count": 0}
+
+            def mutation():
+                calls["count"] += 1
+                return "done"
+
+            with patch(
+                "src.mission_orchestrator.subprocess.run",
+                side_effect=[git_ok, service_ok],
+            ):
+                result = orch.execute_mutation(
+                    mutation,
+                    repo_path=repo,
+                    mutation_id="guard-test",
+                )
+
+            self.assertEqual(result, "done")
+            self.assertEqual(calls["count"], 1)
+
+
+class TestDurableCheckpointResume(unittest.TestCase):
+    """Checkpoint/resume must be durable, idempotent, and fail closed."""
+
+    def test_checkpoint_survives_restart_and_resumes(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / "state.json"
+            evidence_dir = Path(td) / "evidence"
+
+            orch = MissionOrchestrator(
+                state_path=state_path,
+                evidence_dir=evidence_dir,
+            )
+            orch.create_mission(
+                description="checkpoint restart",
+                owner="louis",
+            )
+            orch.activate()
+
+            expected = {
+                "completed_steps": ["fetch"],
+                "next_step": "analyze",
+            }
+            orch.write_checkpoint("phase-progress", expected)
+
+            orch2 = MissionOrchestrator(
+                state_path=state_path,
+                evidence_dir=evidence_dir,
+                contract_path=state_path.with_suffix(".contract.json"),
+            )
+            orch2.startup()
+
+            self.assertEqual(
+                orch2.resume_checkpoint("phase-progress"),
+                expected,
+            )
+
+    def test_checkpoint_rewrite_same_payload_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as td:
+            orch = MissionOrchestrator(
+                state_path=Path(td) / "state.json",
+                evidence_dir=Path(td) / "evidence",
+            )
+            orch.create_mission(
+                description="checkpoint idempotency",
+                owner="louis",
+            )
+            orch.activate()
+
+            data = {"next_step": "report"}
+            first = orch.write_checkpoint("progress", data)
+            before = first.read_bytes()
+
+            second = orch.write_checkpoint("progress", data)
+
+            self.assertEqual(first, second)
+            self.assertEqual(before, second.read_bytes())
+
+    def test_conflicting_checkpoint_same_generation_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            orch = MissionOrchestrator(
+                state_path=Path(td) / "state.json",
+                evidence_dir=Path(td) / "evidence",
+            )
+            orch.create_mission(
+                description="checkpoint conflict",
+                owner="louis",
+            )
+            orch.activate()
+
+            orch.write_checkpoint(
+                "progress",
+                {"next_step": "analyze"},
+            )
+
+            with self.assertRaises(CheckpointError):
+                orch.write_checkpoint(
+                    "progress",
+                    {"next_step": "mutate"},
+                )
+
+    def test_stale_checkpoint_rejected_after_state_advances(self):
+        with tempfile.TemporaryDirectory() as td:
+            orch = MissionOrchestrator(
+                state_path=Path(td) / "state.json",
+                evidence_dir=Path(td) / "evidence",
+            )
+            orch.create_mission(
+                description="stale checkpoint",
+                owner="louis",
+            )
+            orch.activate()
+
+            orch.write_checkpoint(
+                "progress",
+                {"next_step": "analysis"},
+            )
+
+            orch.begin_phase("analysis")
+
+            with self.assertRaises(CheckpointError):
+                orch.resume_checkpoint("progress")
+
+    def test_future_checkpoint_cannot_be_overwritten_by_stale_writer(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / "state.json"
+            evidence_dir = Path(td) / "evidence"
+
+            orch = MissionOrchestrator(
+                state_path=state_path,
+                evidence_dir=evidence_dir,
+            )
+            contract = orch.create_mission(
+                description="future checkpoint protection",
+                owner="louis",
+            )
+            orch.activate()
+
+            evidence_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint = evidence_dir / "checkpoint-progress.json"
+
+            future = {
+                "task_id": contract.task_id,
+                "generation": orch.state.generation + 1,
+                "state": "ACTIVE",
+                "data": {"next_step": "future-work"},
+            }
+            checkpoint.write_text(
+                json.dumps(future),
+                encoding="utf-8",
+            )
+            before = checkpoint.read_bytes()
+
+            with self.assertRaises(CheckpointError):
+                orch.write_checkpoint(
+                    "progress",
+                    {"next_step": "stale-work"},
+                )
+
+            self.assertEqual(checkpoint.read_bytes(), before)
 
 
 class TestTransactionalOperations(unittest.TestCase):
@@ -291,6 +667,58 @@ class TestTransactionalOperations(unittest.TestCase):
             evidence = json.loads(evidence_files[0].read_text())
             self.assertEqual(evidence["transaction_name"], "fail-txn")
             self.assertEqual(evidence["steps_completed"], 1)
+
+
+class TestPhaseAutomation(unittest.TestCase):
+    """Successful phases auto-advance; reporting failures never regress work."""
+
+    def test_successful_phase_auto_advances_to_active(self):
+        with tempfile.TemporaryDirectory() as td:
+            orch = MissionOrchestrator(
+                state_path=Path(td) / "state.json",
+                evidence_dir=Path(td) / "evidence",
+            )
+            orch.create_mission(
+                description="auto phase",
+                owner="louis",
+            )
+            orch.activate()
+
+            result = orch.run_phase(
+                "analysis",
+                lambda: {"status": "done"},
+            )
+
+            self.assertEqual(result, {"status": "done"})
+            self.assertEqual(orch.state.state, "ACTIVE")
+            self.assertTrue(orch.state.executable)
+
+    def test_reporting_failure_does_not_regress_completed_phase(self):
+        with tempfile.TemporaryDirectory() as td:
+            orch = MissionOrchestrator(
+                state_path=Path(td) / "state.json",
+                evidence_dir=Path(td) / "evidence",
+            )
+            orch.create_mission(
+                description="reporting failure",
+                owner="louis",
+            )
+            orch.activate()
+
+            def broken_reporter(_result):
+                raise ConnectionError("report transport unavailable")
+
+            with self.assertRaises(ReportingError):
+                orch.run_phase(
+                    "analysis",
+                    lambda: "completed-work",
+                    reporter=broken_reporter,
+                )
+
+            # Work was already committed before reporting began.
+            self.assertEqual(orch.state.state, "ACTIVE")
+            self.assertTrue(orch.state.executable)
+            self.assertNotEqual(orch.state.state, "RECOVERY_REQUIRED")
 
 
 class TestFinalizedTerminal(unittest.TestCase):
@@ -496,6 +924,426 @@ class TestEndToEndAutonomousRegression(unittest.TestCase):
             self.assertTrue(final.is_finalized())
             self.assertEqual(final.metadata["finalized_reason"],
                            "all phases complete")
+
+
+
+
+class TestDurableMutationReceipts(unittest.TestCase):
+    def test_completed_mutation_cannot_replay_after_restart(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / "state.json"
+            evidence_dir = Path(td) / "evidence"
+            repo = Path(td) / "repo"
+            repo.mkdir()
+
+            guard = {
+                "repo_path": str(repo),
+                "sha": "expected-sha",
+                "service": "omniroute.service",
+                "approved": True,
+            }
+
+            orch = MissionOrchestrator(
+                state_path=state_path,
+                evidence_dir=evidence_dir,
+            )
+            orch.create_mission(
+                description="durable receipt",
+                owner="louis",
+                metadata={"mutation_guard": guard},
+            )
+            orch.activate()
+
+            git_ok = type("R", (), {
+                "returncode": 0,
+                "stdout": "expected-sha\n",
+            })()
+            service_ok = type("R", (), {
+                "returncode": 0,
+                "stdout": "active\n",
+            })()
+
+            calls = {"count": 0}
+
+            def mutation():
+                calls["count"] += 1
+                return "done"
+
+            with patch(
+                "src.mission_orchestrator.subprocess.run",
+                side_effect=[git_ok, service_ok],
+            ):
+                self.assertEqual(
+                    orch.execute_mutation(
+                        mutation,
+                        repo_path=repo,
+                        mutation_id="deploy-001",
+                    ),
+                    "done",
+                )
+
+            orch2 = MissionOrchestrator(
+                state_path=state_path,
+                evidence_dir=evidence_dir,
+                contract_path=state_path.with_suffix(".contract.json"),
+            )
+            orch2.startup()
+
+            with patch(
+                "src.mission_orchestrator.subprocess.run",
+                side_effect=[git_ok, service_ok],
+            ):
+                with self.assertRaises(DuplicateMutationError):
+                    orch2.execute_mutation(
+                        mutation,
+                        repo_path=repo,
+                        mutation_id="deploy-001",
+                    )
+
+            self.assertEqual(calls["count"], 1)
+
+    def test_ambiguous_mutation_cannot_replay_after_recovery_restart(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / "state.json"
+            evidence_dir = Path(td) / "evidence"
+            repo = Path(td) / "repo"
+            repo.mkdir()
+
+            guard = {
+                "repo_path": str(repo),
+                "sha": "expected-sha",
+                "service": "omniroute.service",
+                "approved": True,
+            }
+
+            orch = MissionOrchestrator(
+                state_path=state_path,
+                evidence_dir=evidence_dir,
+            )
+            contract = orch.create_mission(
+                description="ambiguous durable receipt",
+                owner="louis",
+                metadata={"mutation_guard": guard},
+            )
+            orch.activate()
+
+            git_ok = type("R", (), {
+                "returncode": 0,
+                "stdout": "expected-sha\n",
+            })()
+            service_ok = type("R", (), {
+                "returncode": 0,
+                "stdout": "active\n",
+            })()
+
+            calls = {"count": 0}
+
+            def ambiguous_mutation():
+                calls["count"] += 1
+                # Simulate remote mutation succeeding before response loss.
+                raise ConnectionError("response lost after remote commit")
+
+            with patch(
+                "src.mission_orchestrator.subprocess.run",
+                side_effect=[git_ok, service_ok],
+            ):
+                with self.assertRaises(BoundedRetryExhausted):
+                    orch.execute_mutation(
+                        ambiguous_mutation,
+                        repo_path=repo,
+                        mutation_id="deploy-ambiguous-001",
+                        phase_name="deploy",
+                    )
+
+            self.assertEqual(calls["count"], 1)
+            self.assertEqual(orch.state.state, "RECOVERY_REQUIRED")
+
+            # Receipt must already exist even though result was ambiguous.
+            receipt = (
+                evidence_dir
+                / "mutation-receipts"
+                / "deploy-ambiguous-001.json"
+            )
+            self.assertTrue(receipt.exists())
+            self.assertEqual(
+                json.loads(receipt.read_text())["status"],
+                "started",
+            )
+
+            # Authoritative recovery evidence follows the existing E2E
+            # reconciliation contract: disk generation N -> evidence N+1.
+            evidence_data = {
+                "generation": orch.state.generation + 1,
+                "state": "ACTIVE",
+                "version": orch.state.version,
+                "task_id": contract.task_id,
+                "recovered_from": "provider_interruption",
+                "recovered_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                ),
+            }
+            evidence_dir.mkdir(parents=True, exist_ok=True)
+            (evidence_dir / "authoritative.json").write_text(
+                json.dumps(evidence_data),
+                encoding="utf-8",
+            )
+
+            # Fresh orchestrator performs the real startup recovery path.
+            orch2 = MissionOrchestrator(
+                state_path=state_path,
+                evidence_dir=evidence_dir,
+                contract_path=state_path.with_suffix(".contract.json"),
+            )
+            recovered = orch2.startup()
+
+            self.assertEqual(recovered.state, "ACTIVE")
+            self.assertTrue(recovered.executable)
+
+            # Even after successful recovery, the ambiguous mutation is
+            # permanently blocked from automatic replay.
+            git_ok2 = type("R", (), {
+                "returncode": 0,
+                "stdout": "expected-sha\n",
+            })()
+            service_ok2 = type("R", (), {
+                "returncode": 0,
+                "stdout": "active\n",
+            })()
+
+            with patch(
+                "src.mission_orchestrator.subprocess.run",
+                side_effect=[git_ok2, service_ok2],
+            ):
+                with self.assertRaises(DuplicateMutationError):
+                    orch2.execute_mutation(
+                        ambiguous_mutation,
+                        repo_path=repo,
+                        mutation_id="deploy-ambiguous-001",
+                        phase_name="deploy",
+                    )
+
+            self.assertEqual(calls["count"], 1)
+
+class TestSimulatedPcVpsRecovery(unittest.TestCase):
+    """Simulate tunnel loss, PC evidence arrival, and VPS recovery."""
+
+    def test_vps_stays_fail_closed_until_pc_evidence_arrives(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / "state.json"
+            evidence_dir = Path(td) / "shared-evidence"
+            contract_path = Path(td) / "contract.json"
+
+            # Mission is owned/executed by the VPS.
+            with patch(
+                "src.mission_orchestrator.get_host_id",
+                return_value="hermes-vps",
+            ):
+                orch = MissionOrchestrator(
+                    state_path=state_path,
+                    evidence_dir=evidence_dir,
+                    contract_path=contract_path,
+                )
+                contract = orch.create_mission(
+                    description="PC-VPS recovery simulation",
+                    owner="louis",
+                )
+                orch.activate()
+
+                # Simulate provider/tunnel interruption.
+                with self.assertRaises(BoundedRetryExhausted):
+                    orch.execute_with_retry(
+                        lambda: (_ for _ in ()).throw(
+                            ConnectionError("PC tunnel unavailable")
+                        ),
+                        phase_name="pc-worker",
+                    )
+
+                self.assertEqual(
+                    orch.state.state,
+                    "RECOVERY_REQUIRED",
+                )
+                failed_generation = orch.state.generation
+
+                # VPS restart while tunnel/evidence is still unavailable:
+                # must remain fail-closed.
+                vps_without_pc = MissionOrchestrator(
+                    state_path=state_path,
+                    evidence_dir=evidence_dir,
+                    contract_path=contract_path,
+                )
+                still_blocked = vps_without_pc.startup()
+
+                self.assertEqual(
+                    still_blocked.state,
+                    "RECOVERY_REQUIRED",
+                )
+                self.assertFalse(still_blocked.executable)
+                self.assertEqual(
+                    still_blocked.generation,
+                    failed_generation,
+                )
+
+            # Simulate PC becoming reachable and depositing authoritative
+            # recovery evidence into the shared/tunnel-visible boundary.
+            evidence_dir.mkdir(parents=True, exist_ok=True)
+            pc_evidence = {
+                "generation": failed_generation + 1,
+                "state": "ACTIVE",
+                "version": orch.state.version,
+                "task_id": contract.task_id,
+                "recovered_from": "pc_tunnel_restored",
+                "recovered_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    time.gmtime(),
+                ),
+            }
+            (evidence_dir / "authoritative.json").write_text(
+                json.dumps(pc_evidence),
+                encoding="utf-8",
+            )
+
+            # VPS comes back/rechecks after PC evidence becomes visible.
+            with patch(
+                "src.mission_orchestrator.get_host_id",
+                return_value="hermes-vps",
+            ):
+                vps_after_pc = MissionOrchestrator(
+                    state_path=state_path,
+                    evidence_dir=evidence_dir,
+                    contract_path=contract_path,
+                )
+                recovered = vps_after_pc.startup()
+
+            self.assertEqual(recovered.state, "ACTIVE")
+            self.assertTrue(recovered.executable)
+            self.assertEqual(
+                recovered.generation,
+                failed_generation + 1,
+            )
+
+class TestDeterministicLongRunningE2E(unittest.TestCase):
+    """Exercise many autonomous phase/restart/checkpoint cycles."""
+
+    def test_long_running_mission_survives_restarts_without_duplication(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / "state.json"
+            evidence_dir = Path(td) / "evidence"
+            contract_path = Path(td) / "contract.json"
+
+            orch = MissionOrchestrator(
+                state_path=state_path,
+                evidence_dir=evidence_dir,
+                contract_path=contract_path,
+            )
+            orch.create_mission(
+                description="deterministic long-running E2E",
+                owner="louis",
+            )
+            orch.activate()
+
+            completed = []
+
+            for i in range(30):
+                phase = f"work-{i:02d}"
+
+                result = orch.run_phase(
+                    phase,
+                    lambda i=i: i,
+                )
+
+                completed.append(result)
+
+                checkpoint = {
+                    "completed_count": len(completed),
+                    "last_result": result,
+                    "next_index": i + 1,
+                }
+                orch.write_checkpoint("long-run", checkpoint)
+
+                # Recreate the worker/orchestrator regularly to prove that
+                # durable state, contract, and checkpoint survive restarts.
+                if (i + 1) % 5 == 0:
+                    orch = MissionOrchestrator(
+                        state_path=state_path,
+                        evidence_dir=evidence_dir,
+                        contract_path=contract_path,
+                    )
+                    state = orch.startup()
+
+                    self.assertEqual(state.state, "ACTIVE")
+                    self.assertTrue(state.executable)
+                    self.assertEqual(
+                        orch.resume_checkpoint("long-run"),
+                        checkpoint,
+                    )
+
+            self.assertEqual(completed, list(range(30)))
+            self.assertEqual(orch.state.state, "ACTIVE")
+
+            orch.finalize("long E2E complete")
+
+            self.assertEqual(orch.state.state, "FINALIZED")
+            self.assertEqual(len(completed), 30)
+
+class TestBoundedAutonomySoak(unittest.TestCase):
+    """Fixed-size soak for repeated durable autonomous lifecycles."""
+
+    def test_100_lifecycle_soak(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+
+            for i in range(100):
+                td = root / f"mission-{i:03d}"
+                td.mkdir()
+
+                state_path = td / "state.json"
+                evidence_dir = td / "evidence"
+                contract_path = td / "contract.json"
+
+                orch = MissionOrchestrator(
+                    state_path=state_path,
+                    evidence_dir=evidence_dir,
+                    contract_path=contract_path,
+                )
+                orch.create_mission(
+                    task_id=f"soak-{i:03d}",
+                    description="bounded autonomy soak",
+                    owner="louis",
+                )
+                orch.activate()
+
+                result = orch.run_phase(
+                    "work",
+                    lambda i=i: {"iteration": i},
+                )
+                self.assertEqual(result["iteration"], i)
+
+                checkpoint = {
+                    "iteration": i,
+                    "status": "work-complete",
+                }
+                orch.write_checkpoint("progress", checkpoint)
+
+                # Simulate worker/process restart every lifecycle.
+                restarted = MissionOrchestrator(
+                    state_path=state_path,
+                    evidence_dir=evidence_dir,
+                    contract_path=contract_path,
+                )
+                state = restarted.startup()
+
+                self.assertEqual(state.state, "ACTIVE")
+                self.assertTrue(state.executable)
+                self.assertEqual(
+                    restarted.resume_checkpoint("progress"),
+                    checkpoint,
+                )
+
+                restarted.finalize("soak iteration complete")
+                self.assertEqual(
+                    restarted.state.state,
+                    "FINALIZED",
+                )
 
 
 if __name__ == "__main__":
