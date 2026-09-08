@@ -14,6 +14,7 @@ import {
   MIN_EMPIRICAL_EVAL_SAMPLES,
 } from "@/lib/evals/empiricalAggregation";
 import { buildEvalTargetOptions, runEvalSuiteAgainstTarget } from "@/lib/evals/runtime";
+import { EvalTargetSafetyError, resolveSafeEvalExecution } from "@/lib/evals/targetSafety";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { evalRunSuiteSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
@@ -194,20 +195,57 @@ export async function POST(request: Request) {
       return NextResponse.json({ ...scored, runId: persisted.id });
     }
 
+    const inferenceSuite = getSuite(suiteId);
+    if (!inferenceSuite) {
+      return NextResponse.json(
+        { error: { message: `Suite not found: ${suiteId}` } },
+        { status: 404 }
+      );
+    }
+
+    let inferenceCases: ReturnType<typeof selectEvalCasesByTag>;
+    try {
+      inferenceCases = selectEvalCasesByTag(inferenceSuite.cases || [], tag);
+    } catch (error: unknown) {
+      return NextResponse.json(
+        { error: { message: sanitizeErrorMessage(error) } },
+        { status: 400 }
+      );
+    }
+    if (
+      inferenceCases.some(
+        (evalCase) => Array.isArray(evalCase.tags) && evalCase.tags.includes("offline-only")
+      )
+    ) {
+      throw new EvalTargetSafetyError(
+        "Offline-only eval suites require externally computed outputs"
+      );
+    }
+
     const targetsToRun = [target || { type: "suite-default" as const, id: null }];
     if (compareTarget) {
       targetsToRun.push(compareTarget);
     }
 
-    const runGroupId = targetsToRun.length > 1 ? randomUUID() : null;
+    // Finish every fail-closed safety preflight before dispatching the first case.
+    const preparedTargets = [];
+    for (const entry of targetsToRun) {
+      preparedTargets.push({
+        entry,
+        safeExecution: await resolveSafeEvalExecution(entry),
+      });
+    }
+
+    const runGroupId = preparedTargets.length > 1 ? randomUUID() : null;
     const runs = await Promise.all(
-      targetsToRun.map((entry) =>
+      preparedTargets.map(({ entry, safeExecution }) =>
         runEvalSuiteAgainstTarget({
           suiteId,
           target: entry,
           apiKeyId,
           tag,
           runGroupId,
+          safeExecution,
         })
       )
     );
@@ -233,6 +271,7 @@ export async function POST(request: Request) {
       historyScorecard: getEvalScorecard({ limit: 50 }),
     });
   } catch (error: unknown) {
-    return NextResponse.json({ error: sanitizeErrorMessage(error) }, { status: 500 });
+    const status = error instanceof EvalTargetSafetyError ? 400 : 500;
+    return NextResponse.json({ error: sanitizeErrorMessage(error) }, { status });
   }
 }

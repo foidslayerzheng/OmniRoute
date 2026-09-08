@@ -1,0 +1,214 @@
+{
+  "schemaVersion": 1,
+  "suites": [
+    {
+      "id": "provider_retry",
+      "name": "Hermes Provider Retry",
+      "description": "Deterministic offline coverage for provider retry classification, bounds, and outcomes",
+      "testFile": "tests/evals/test_provider_retry_adapter.py",
+      "cases": [
+        {
+          "id": "immediate-success",
+          "name": "Immediate success",
+          "nodeId": "test_immediate_success_contract_and_offline_defaults"
+        },
+        {
+          "id": "retry-429-success",
+          "name": "HTTP 429 retry succeeds",
+          "nodeId": "test_429_retries_once_then_succeeds_and_captures_retry_after_without_real_sleep"
+        },
+        {
+          "id": "retry-503-success",
+          "name": "HTTP 503 retry succeeds",
+          "nodeId": "test_retryable_503_uses_production_classification_then_succeeds"
+        },
+        {
+          "id": "nonretryable-400",
+          "name": "HTTP 400 stops immediately",
+          "nodeId": "test_non_retryable_400_stops_after_one_attempt"
+        },
+        {
+          "id": "retry-exhaustion",
+          "name": "Retry budget exhaustion",
+          "nodeId": "test_repeated_retryable_failures_exhaust_exact_retry_budget"
+        },
+        {
+          "id": "timeout-classification",
+          "name": "Timeout classification",
+          "nodeId": "test_timeout_is_classified_by_production_classifier"
+        },
+        {
+          "id": "error-redaction-bounds",
+          "name": "Bounded redacted errors",
+          "nodeId": "test_error_summary_is_bounded_and_redacts_credentials_and_raw_payload"
+        },
+        {
+          "id": "deterministic-clock-tags",
+          "name": "Deterministic clock and tags",
+          "nodeId": "test_deterministic_clock_sets_duration_and_tags_are_copied"
+        },
+        {
+          "id": "empty-success",
+          "name": "Empty successful response",
+          "nodeId": "test_empty_success_response_is_not_failure"
+        },
+        {
+          "id": "expectation-mismatch",
+          "name": "Explicit expectation mismatch",
+          "nodeId": "test_explicit_expectations_mark_mismatch_failed_without_changing_observation"
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "name": "Hermes Memory",
+      "description": "Deterministic offline coverage for memory recall, injection, bounds, availability, and writes",
+      "testFile": "tests/evals/test_memory_adapter.py",
+      "cases": [
+        {
+          "id": "exact-recall",
+          "name": "Exact expected recall",
+          "nodeId": "test_exact_expected_recall_passes_and_contract_defaults_are_offline"
+        },
+        {
+          "id": "missing-recall",
+          "name": "Missing expected recall",
+          "nodeId": "test_missing_expected_recall_fails"
+        },
+        {
+          "id": "irrelevant-rejection",
+          "name": "Irrelevant memory rejection",
+          "nodeId": "test_irrelevant_memory_rejection_passes_and_fails_when_present"
+        },
+        {
+          "id": "result-order",
+          "name": "Provider result order",
+          "nodeId": "test_provider_result_order_is_preserved"
+        },
+        {
+          "id": "registration-order",
+          "name": "Provider registration order",
+          "nodeId": "test_provider_registration_order_is_preserved"
+        },
+        {
+          "id": "empty-recall",
+          "name": "Successful empty recall",
+          "nodeId": "test_successful_empty_recall_is_not_provider_failure"
+        },
+        {
+          "id": "provider-exception",
+          "name": "Provider exception classification",
+          "nodeId": "test_provider_exception_is_distinguished_from_successful_empty_recall"
+        },
+        {
+          "id": "unavailable-provider",
+          "name": "Unavailable provider handling",
+          "nodeId": "test_unavailable_provider_is_graceful_and_bounded"
+        },
+        {
+          "id": "builtin-user-separation-memory-first",
+          "name": "Built-in and user injection separation, memory first",
+          "nodeId": "test_builtin_memory_and_user_injection_remain_separate[memory-durable project fact-private user preference]"
+        },
+        {
+          "id": "builtin-user-separation-user-first",
+          "name": "Built-in and user injection separation, user first",
+          "nodeId": "test_builtin_memory_and_user_injection_remain_separate[user-private user preference-durable project fact]"
+        },
+        {
+          "id": "builtin-injection-failure",
+          "name": "Built-in injection failure",
+          "nodeId": "test_builtin_injection_failure_is_bounded"
+        },
+        {
+          "id": "provider-context-bounding",
+          "name": "Oversized provider context",
+          "nodeId": "test_oversized_provider_context_uses_existing_sanitization_path"
+        },
+        {
+          "id": "committed-write-memory",
+          "name": "Committed memory write",
+          "nodeId": "test_committed_write_mirrors_and_preserves_target[memory]"
+        },
+        {
+          "id": "committed-write-user",
+          "name": "Committed user write",
+          "nodeId": "test_committed_write_mirrors_and_preserves_target[user]"
+        },
+        {
+          "id": "failed-write-result-0",
+          "name": "Failed write result zero",
+          "nodeId": "test_failed_or_uncommitted_write_does_not_mirror[tool_result0]"
+        },
+        {
+          "id": "failed-write-result-1",
+          "name": "Failed write result one",
+          "nodeId": "test_failed_or_uncommitted_write_does_not_mirror[tool_result1]"
+        },
+        {
+          "id": "failed-write-invalid-json",
+          "name": "Invalid write result",
+          "nodeId": "test_failed_or_uncommitted_write_does_not_mirror[not-json]"
+        },
+        {
+          "id": "provider-write-failure",
+          "name": "Provider write failure",
+          "nodeId": "test_provider_write_failure_is_bounded_and_does_not_crash"
+        }
+      ]
+    },
+    {
+      "id": "browser_tool",
+      "name": "Hermes Browser Tool",
+      "description": "Deterministic offline coverage for scripted tools and mocked browser supervisor outcomes",
+      "testFile": "tests/evals/test_browser_tool_adapter.py",
+      "cases": [
+        {
+          "id": "scripted-success",
+          "name": "Scripted tool success",
+          "nodeId": "test_scripted_success_uses_executor_and_preserves_order_ids_and_contract"
+        },
+        {
+          "id": "tool-failure",
+          "name": "Tool failure",
+          "nodeId": "test_tool_failure_is_failed_with_bounded_reason"
+        },
+        {
+          "id": "sanitizer-bounds",
+          "name": "Sanitizer bounds and redaction",
+          "nodeId": "test_sanitizer_bounds_and_redacts_credentials"
+        },
+        {
+          "id": "deterministic-clock",
+          "name": "Deterministic clock",
+          "nodeId": "test_injected_clock_produces_exact_duration"
+        },
+        {
+          "id": "supervisor-success",
+          "name": "Mocked supervisor success",
+          "nodeId": "test_browser_success_with_mocked_supervisor_path_and_explicit_trace"
+        },
+        {
+          "id": "blocked-shape",
+          "name": "Blocked browser result",
+          "nodeId": "test_browser_blocked_production_shape_is_failed"
+        },
+        {
+          "id": "assertion-failure",
+          "name": "Browser assertion failure",
+          "nodeId": "test_browser_failed_assertion_is_bounded_and_does_not_spawn"
+        },
+        {
+          "id": "adapter-error",
+          "name": "Terminal adapter error",
+          "nodeId": "test_browser_adapter_error_is_terminal_error_without_stack_trace"
+        },
+        {
+          "id": "correlation-defaults",
+          "name": "Correlation and trace defaults",
+          "nodeId": "test_correlation_fields_and_default_trace_are_explicit_nulls"
+        }
+      ]
+    }
+  ]
+}

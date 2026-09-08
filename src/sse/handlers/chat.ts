@@ -468,7 +468,10 @@ export async function handleChat(
   const externalSessionId = extractExternalSessionId(request.headers);
   const sessionId = externalSessionId || generateStableSessionId(body);
   const sessionAffinityKey = extractSessionAffinityKey(body, request.headers) || sessionId;
-  const requestedConnectionId = request.headers.get("x-omniroute-connection")?.trim() || null;
+  const evalConnectionLock =
+    request.headers.get("x-omniroute-eval-connection-lock")?.trim() || null;
+  const requestedConnectionId =
+    evalConnectionLock || request.headers.get("x-omniroute-connection")?.trim() || null;
   if (sessionId) {
     touchSession(sessionId);
   }
@@ -955,9 +958,11 @@ export async function handleChat(
     telemetry,
     {
       sessionId,
-      sessionAffinityKey,
+      sessionAffinityKey: evalConnectionLock ? null : sessionAffinityKey,
+      emergencyFallbackTried: evalConnectionLock ? true : undefined,
       forceLiveComboTest: isComboLiveTest,
       forcedConnectionId: requestedConnectionId,
+      allowedConnectionIds: evalConnectionLock ? [evalConnectionLock] : null,
       correlationId: reqId,
       routingComboId,
       reasoningDecision,

@@ -25,6 +25,21 @@ const inferenceFn = mock.fn(async (opts) => ({
   summary: { total: 1, passed: 1, failed: 0, passRate: 100 },
 }));
 
+class EvalTargetSafetyError extends Error {}
+const safetyFn = mock.fn(async () => ({
+  connectionId: "test-local-connection",
+  model: "openai/qwen/qwen3.5-9b",
+  zeroCostVerified: true,
+}));
+
+mock.module("../../src/lib/evals/targetSafety", {
+  defaultExport: false,
+  namedExports: {
+    EvalTargetSafetyError,
+    resolveSafeEvalExecution: safetyFn,
+  },
+});
+
 mock.module("../../src/lib/evals/runtime", {
   defaultExport: false,
   namedExports: {
@@ -35,5 +50,6 @@ mock.module("../../src/lib/evals/runtime", {
 
 // Expose for tests
 globalThis.__inferenceMock = inferenceFn;
+globalThis.__evalSafetyMock = safetyFn;
 
 console.log("[mock-inference] fetch blocked, inference runner mocked (no real runtime loaded)");

@@ -35,7 +35,7 @@ test("external-output ingestion contract (isolated subprocess)", () => {
   );
   assert.ifError(result.error);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, /# tests 10(?:\r?\n|$)/, result.stdout);
-  assert.match(result.stdout, /# pass 10(?:\r?\n|$)/, result.stdout);
+  assert.match(result.stdout, /# tests 11(?:\r?\n|$)/, result.stdout);
+  assert.match(result.stdout, /# pass 11(?:\r?\n|$)/, result.stdout);
   assert.match(result.stdout, /# fail 0(?:\r?\n|$)/, result.stdout);
 });

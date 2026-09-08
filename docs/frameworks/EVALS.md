@@ -1,13 +1,13 @@
 ---
 title: "Evaluations (Evals)"
-version: 3.8.40
-lastUpdated: 2026-06-28
+version: 3.8.49
+lastUpdated: 2026-09-07
 ---
 
 # Evaluations (Evals)
 
 > **Source of truth:** `src/lib/evals/`, `src/lib/db/evals.ts`, `src/app/api/evals/`
-> **Last updated:** 2026-06-28 — v3.8.40
+> **Last updated:** 2026-09-07 — v3.8.49
 
 OmniRoute ships a generic evaluation framework you can use to benchmark routing
 configurations, single providers/models, or the bundled "golden set" suites.
@@ -48,6 +48,10 @@ The current built-in suites (see `src/lib/evals/evalRunner.ts`):
 - `safety-guardrails` — PII, jailbreak, refusal, bias awareness
 - `instruction-following` — JSON-only, numbered lists, language constraints
 - `codex-comparison` — head-to-head coding tasks intended for compare mode
+- `jarvis-core` — Jarvis instruction following, routing, memory, and safety cases
+- `provider_retry` — 10 deterministic Hermes provider retry cases
+- `memory` — 18 deterministic Hermes memory cases
+- `browser_tool` — 9 deterministic Hermes browser-tool cases
 
 ### Case
 
@@ -67,15 +71,25 @@ Each case carries:
 The same suite can be run against different targets. The target schema is
 `evalTargetSchema` in `src/shared/validation/schemas.ts`:
 
-| Target type     | `id`       | Behavior                                                        |
-| --------------- | ---------- | --------------------------------------------------------------- |
-| `suite-default` | `null`     | Each case uses its built-in `model` field                       |
-| `model`         | model name | Force every case through one direct model (e.g. `gpt-4o`)       |
-| `combo`         | combo name | Run every case through one combo (exercises the routing engine) |
+| Target type     | `id`       | Schema meaning                                |
+| --------------- | ---------- | --------------------------------------------- |
+| `suite-default` | `null`     | Each case requests its built-in `model` field |
+| `model`         | model name | Force every case through one direct model     |
+| `combo`         | combo name | Run every case through one combo              |
 
 For `model` and `combo`, the `id` field is required (enforced by Zod
 `superRefine`). When `compareTarget` is provided, both targets must differ —
 the runner persists both runs under the same `runGroupId` for A/B comparison.
+
+Inference execution is currently fail closed. The only approved target is
+`{ "type": "model", "id": "openai/qwen/qwen3.5-9b" }`. Before any case is
+dispatched, the API verifies the exact active Local-Qwen connection ID,
+provider, default model, normalized LM Studio base URL, and the model returned
+by that endpoint's `/models` catalog. The chat handler then locks the request to
+that connection and disables affinity, account rotation, and emergency
+fallback. `suite-default`, `combo`, aliases, and names ending in `:free` do not
+prove zero monetary cost and are rejected for inference. In compare mode, every
+target completes this preflight before either run starts.
 
 ## Scoring Rubrics
 
@@ -133,7 +147,7 @@ curl -X POST http://localhost:20128/api/evals \
   -H "Content-Type: application/json" \
   -d '{
     "suiteId": "golden-set",
-    "target": { "type": "combo", "id": "my-combo" },
+    "target": { "type": "model", "id": "openai/qwen/qwen3.5-9b" },
     "apiKeyId": "optional-api-key-uuid"
   }'
 ```
@@ -188,6 +202,27 @@ the result through the same `saveEvalRun()` storage path.
 
 Cases run **sequentially**. There is no concurrency flag today.
 
+### Hermes deterministic offline suites
+
+The `provider_retry`, `memory`, and `browser_tool` built-ins accept only
+externally computed outputs. Runtime inference rejects suites tagged
+`offline-only` before target preflight or dispatch. Their case IDs and exact
+pytest node IDs share one manifest at
+`src/lib/evals/evalRunner/hermesOfflineSuites.json`.
+
+Run the bridge from the OmniRoute repository:
+
+```bash
+node scripts/evals/run-hermes-offline.mjs \
+  --hermes-root /home/louis/.hermes/hermes-agent
+```
+
+The default is a dry run: it runs the three deterministic pytest files and
+prints suite totals without contacting OmniRoute. Add `--submit` to send one
+management-authenticated `{ suiteId, outputs }` request per suite through the
+supported `/api/evals` ingestion path. The bridge never writes SQLite directly,
+and submitted results use the existing `eval_runs` storage.
+
 ## Dashboard
 
 The UI lives at `Dashboard → Usage → Evals`
@@ -196,8 +231,8 @@ can:
 
 - Browse built-in and custom suites with case-by-case preview.
 - Create/edit/delete custom suites with the case builder.
-- Pick a target (suite defaults / model / combo), optionally a second
-  `compareTarget`, optionally an API key, then run on demand.
+- Run inference through the advertised verified Local-Qwen target, optionally
+  with an API key, or ingest externally computed outputs.
 - Inspect run history, per-case pass/fail, latency, and captured outputs.
 - See the rolling scorecard aggregated across the latest run per
   `(suite, target)` scope.
@@ -237,8 +272,9 @@ Common changes and where to make them:
 - **New scoring strategy** — extend the `switch (evalCase.expected.strategy)`
   block in `evaluateCase()` (`evalRunner.ts`) and widen `EvalCaseStrategy` in
   `src/lib/db/evals.ts` plus `evalCaseBuilderSchema` in `schemas.ts`.
-- **New built-in suite** — define a suite object and call `registerSuite()` at
-  the bottom of `evalRunner.ts`. It will be auto-discovered by `listSuites()`.
+- **New built-in suite** — define a suite object and include it in
+  `builtInSuites` in `evalRunner/builtinSuites.ts`. It will be auto-discovered
+  by `listSuites()`.
 - **Run with concurrency** — change the sequential `for` loop in
   `runEvalSuiteAgainstTarget()` to a bounded `Promise.all` (no concurrency
   control exists today).

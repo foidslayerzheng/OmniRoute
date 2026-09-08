@@ -10,7 +10,7 @@ process.env.API_KEY_SECRET = "test-secret";
 
 interface EvalsRoutePayload {
   suites: unknown[];
-  targets: Array<{ type: string }>;
+  targets: Array<{ key: string; type: string; id: string | null }>;
   apiKeys: Array<{ id: string; name: string; key?: string }>;
   recentRuns: Array<{ target: { key: string } }>;
   scorecard: { overallPassRate: number } | null;
@@ -89,10 +89,15 @@ test("evals GET returns suites, target options, api key metadata, and persisted 
     ),
     true
   );
-  assert.equal(
-    payload.targets.some((entry) => entry.type === "suite-default"),
-    true
-  );
+  assert.deepEqual(payload.targets, [
+    {
+      key: "model:openai/qwen/qwen3.5-9b",
+      type: "model",
+      id: "openai/qwen/qwen3.5-9b",
+      label: "Model: openai/qwen/qwen3.5-9b",
+      description: "Verified zero-cost Local-Qwen connection",
+    },
+  ]);
 });
 
 test("evals GET exposes stored runs and aggregated pass rate inline", async () => {

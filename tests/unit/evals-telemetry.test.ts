@@ -93,16 +93,27 @@ test("explicit cache hit records a semantic zero cost", () => {
   assert.equal(telemetry.costStatus, "cache_hit_zero");
 });
 
-test("free and local selected models record a free-route zero cost", () => {
+test("model names never prove a free-route zero cost", () => {
   for (const selectedModel of ["openrouter/model:free", "local-qwen"]) {
     const telemetry = collectEvalTelemetry({
       ...base,
       response: response({ "X-OmniRoute-Model": selectedModel }),
       payload: {},
     });
-    assert.equal(telemetry.costUsd, 0);
-    assert.equal(telemetry.costStatus, "free_route");
+    assert.equal(telemetry.costUsd, null);
+    assert.equal(telemetry.costStatus, "unknown");
   }
+});
+
+test("a positively verified local execution records a free-route zero cost", () => {
+  const telemetry = collectEvalTelemetry({
+    ...base,
+    response: response({ "X-OmniRoute-Model": "openai/qwen/qwen3.5-9b" }),
+    payload: {},
+    zeroCostVerified: true,
+  });
+  assert.equal(telemetry.costUsd, 0);
+  assert.equal(telemetry.costStatus, "free_route");
 });
 
 test("zero cost header on an unknown route remains unknown", () => {

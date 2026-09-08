@@ -18,7 +18,11 @@ const evalsRoute = await import("../../src/app/api/evals/route.ts");
 const inferenceMock = (globalThis as unknown as { __inferenceMock: unknown }).__inferenceMock as {
   mock: { calls: { arguments: Record<string, unknown>[] }[]; resetCalls(): void };
 };
+const safetyMock = (globalThis as unknown as { __evalSafetyMock: unknown }).__evalSafetyMock as {
+  mock: { calls: unknown[]; resetCalls(): void };
+};
 assert.ok(inferenceMock, "mock-inference.mjs must be loaded via --import before tests");
+assert.ok(safetyMock, "mock-inference.mjs must expose the target safety mock");
 
 type EvalCaseInput = Parameters<typeof localDb.saveCustomEvalSuite>[0]["cases"][number];
 
@@ -47,6 +51,7 @@ function makePost(body: PostBody): Request {
 test.beforeEach(() => {
   resetDb();
   inferenceMock.mock.resetCalls();
+  safetyMock.mock.resetCalls();
 });
 
 test.after(() => {
@@ -368,4 +373,19 @@ test("POST without outputs invokes inference runner once with expected args", as
   // Mock result shape is reflected in response
   assert.equal(payload.runs[0].suiteName, "mocked-suite");
   assert.equal(payload.runs[0].summary.total, 1);
+});
+
+test("offline-only suite is rejected before target safety preflight or inference", async () => {
+  const response = await evalsRoute.POST(
+    makePost({
+      suiteId: "provider_retry",
+      target: { type: "model", id: "openai/qwen/qwen3.5-9b" },
+    })
+  );
+
+  assert.equal(response.status, 400);
+  const payload = await response.json();
+  assert.match(payload.error, /require externally computed outputs/);
+  assert.equal(safetyMock.mock.calls.length, 0);
+  assert.equal(inferenceMock.mock.calls.length, 0);
 });

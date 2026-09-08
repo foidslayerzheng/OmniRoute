@@ -11,9 +11,8 @@ process.env.DISABLE_SQLITE_AUTO_BACKUP = "true";
 const core = await import("../../src/lib/db/core.ts");
 const localDb = await import("../../src/lib/localDb.ts");
 const { evalRunSuiteSchema } = await import("../../src/shared/validation/schemas/evals.ts");
-const { getSuite, runSuite, selectEvalCasesByTag } = await import(
-  "../../src/lib/evals/evalRunner.ts"
-);
+const { getSuite, runSuite, selectEvalCasesByTag } =
+  await import("../../src/lib/evals/evalRunner.ts");
 const { runEvalSuiteAgainstTarget } = await import("../../src/lib/evals/runtime.ts");
 
 function resetDb() {
@@ -87,6 +86,30 @@ test("a nonmatching runtime tag fails before dispatch or persistence", async () 
         tag: "task-class:not-present",
       }),
       /No eval cases matched tag: task-class:not-present/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(networkRequests, 0);
+  assert.deepEqual(localDb.listEvalRuns({ limit: 20 }), []);
+});
+
+test("offline-only suites fail before safety preflight or inference dispatch", async () => {
+  let networkRequests = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    networkRequests += 1;
+    throw new Error("network must not be reached");
+  };
+
+  try {
+    await assert.rejects(
+      runEvalSuiteAgainstTarget({
+        suiteId: "provider_retry",
+        target: { type: "model", id: "openai/qwen/qwen3.5-9b" },
+      }),
+      /require externally computed outputs/
     );
   } finally {
     globalThis.fetch = originalFetch;

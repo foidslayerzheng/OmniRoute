@@ -298,14 +298,7 @@ export function resetSuites() {
 // Suite data lives in ./evalRunner/builtinSuites (pure data, zero imports).
 // Registration runs at module load, mirroring the original inline calls.
 
-registerSuite(goldenSet);
-registerSuite(codingSuite);
-registerSuite(reasoningSuite);
-registerSuite(multilingualSuite);
-registerSuite(safetySuite);
-registerSuite(instructionSuite);
-registerSuite(codexComparisonSuite);
-registerSuite(jarvisCoreSuite);
+registerBuiltInSuites();
 
 function registerBuiltInSuites() {
   for (const suite of builtInSuites) {

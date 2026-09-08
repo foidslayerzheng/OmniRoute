@@ -1,8 +1,14 @@
 import { POST as postChatCompletion } from "@/app/api/v1/chat/completions/route";
 import type { PersistedEvalRun, EvalTargetType } from "@/lib/db/evals";
 import { saveEvalRun } from "@/lib/db/evals";
-import { getApiKeyById, getCombos } from "@/lib/localDb";
-import { getSuite, listSuites, runSuite, selectEvalCasesByTag } from "./evalRunner";
+import { getApiKeyById } from "@/lib/localDb";
+import { getSuite, runSuite, selectEvalCasesByTag } from "./evalRunner";
+import {
+  APPROVED_LOCAL_QWEN_TARGET,
+  EvalTargetSafetyError,
+  resolveSafeEvalExecution,
+  type SafeEvalExecution,
+} from "./targetSafety";
 
 export interface EvalTargetInput {
   type: EvalTargetType;
@@ -74,45 +80,14 @@ export function normalizeEvalTarget(target?: EvalTargetInput | null): EvalTarget
 }
 
 export async function buildEvalTargetOptions(): Promise<EvalTargetOption[]> {
-  const [suites, combos] = await Promise.all([Promise.resolve(listSuites()), getCombos()]);
-  const models = [
-    ...new Set(
-      suites
-        .flatMap((suite) => suite.cases || [])
-        .map((evalCase) => evalCase.model)
-        .filter((model): model is string => typeof model === "string" && model.trim().length > 0)
-    ),
-  ].sort((left, right) => left.localeCompare(right));
-
-  const comboOptions = (Array.isArray(combos) ? combos : [])
-    .map((combo) => ({
-      key: `combo:${combo.name}`,
-      type: "combo" as const,
-      id: typeof combo.name === "string" ? combo.name : null,
-      label: `Combo: ${combo.name}`,
-      description:
-        typeof combo.strategy === "string" && combo.strategy.trim().length > 0
-          ? `Runs through combo strategy "${combo.strategy}"`
-          : "Runs through the combo router",
-    }))
-    .filter((option) => option.id);
-
   return [
     {
-      key: "suite-default:__default__",
-      type: "suite-default",
-      id: null,
-      label: "Suite defaults",
-      description: "Use each case's built-in model",
+      key: `model:${APPROVED_LOCAL_QWEN_TARGET}`,
+      type: "model",
+      id: APPROVED_LOCAL_QWEN_TARGET,
+      label: `Model: ${APPROVED_LOCAL_QWEN_TARGET}`,
+      description: "Verified zero-cost Local-Qwen connection",
     },
-    ...models.map((model) => ({
-      key: `model:${model}`,
-      type: "model" as const,
-      id: model,
-      label: `Model: ${model}`,
-      description: "Force every case through one direct model",
-    })),
-    ...comboOptions,
   ];
 }
 
@@ -197,18 +172,6 @@ function extractErrorMessage(payload: Record<string, unknown> | null, status: nu
   return message || `HTTP ${status}`;
 }
 
-function resolveCaseModel(evalCase: Record<string, unknown>, target: EvalTargetInput): string {
-  const targetId = getNormalizedTargetId(target);
-  const caseModel =
-    typeof evalCase.model === "string" && evalCase.model.trim().length > 0 ? evalCase.model : null;
-
-  if (target.type === "model" || target.type === "combo") {
-    return targetId || caseModel || "gpt-4o";
-  }
-
-  return caseModel || "gpt-4o";
-}
-
 function optionalHeader(headers: Headers, name: string): string | null {
   const value = headers.get(name);
   return value && value.trim().length > 0 ? value.trim() : null;
@@ -247,6 +210,7 @@ export function collectEvalTelemetry(input: {
   response: Response;
   payload: Record<string, unknown> | null;
   durationMs: number;
+  zeroCostVerified?: boolean;
 }): EvalTelemetry {
   const usage = record(input.payload?.usage);
   const promptDetails = record(usage?.prompt_tokens_details);
@@ -257,14 +221,11 @@ export function collectEvalTelemetry(input: {
     (typeof input.payload?.model === "string" && input.payload.model.trim()
       ? input.payload.model.trim()
       : null);
-  const cacheHit = explicitBoolean(
-    optionalHeader(input.response.headers, "X-OmniRoute-Cache-Hit")
-  );
+  const cacheHit = explicitBoolean(optionalHeader(input.response.headers, "X-OmniRoute-Cache-Hit"));
   const reportedCost = finiteNumber(
     optionalHeader(input.response.headers, "X-OmniRoute-Response-Cost")
   );
-  const freeRoute =
-    selectedModel !== null && (selectedModel.endsWith(":free") || selectedModel === "local-qwen");
+  const freeRoute = input.zeroCostVerified === true;
   const costStatus: EvalTelemetry["costStatus"] =
     reportedCost !== null && reportedCost > 0
       ? "reported"
@@ -311,9 +272,7 @@ export function collectEvalTelemetry(input: {
         integerSignal(inputDetails?.cached_tokens) ??
         integerSignal(usage?.cache_read_input_tokens))
       : null,
-    cacheWriteTokens: bodyUsageAvailable
-      ? integerSignal(usage?.cache_creation_input_tokens)
-      : null,
+    cacheWriteTokens: bodyUsageAvailable ? integerSignal(usage?.cache_creation_input_tokens) : null,
     fallbackCount: integerSignal(
       optionalHeader(input.response.headers, "X-OmniRoute-Fallback-Attempts")
     ),
@@ -330,15 +289,18 @@ async function executeEvalCase(
   suiteId: string,
   evalCase: Record<string, unknown>,
   target: EvalTargetInput,
-  apiKey: string | null
+  apiKey: string | null,
+  safeExecution: SafeEvalExecution
 ): Promise<{ output: string; durationMs: number; error?: string; telemetry: EvalTelemetry }> {
   const input =
     evalCase.input && typeof evalCase.input === "object" && !Array.isArray(evalCase.input)
       ? (evalCase.input as Record<string, unknown>)
       : {};
-  const model = resolveCaseModel(evalCase, target);
+  const model = safeExecution.model;
   const headers = new Headers({
     "Content-Type": "application/json",
+    "X-OmniRoute-Connection": safeExecution.connectionId,
+    "X-OmniRoute-Eval-Connection-Lock": safeExecution.connectionId,
   });
 
   if (apiKey) {
@@ -380,6 +342,7 @@ async function executeEvalCase(
     response,
     payload,
     durationMs,
+    zeroCostVerified: safeExecution.zeroCostVerified,
   });
 
   if (!response.ok) {
@@ -415,6 +378,7 @@ export async function runEvalSuiteAgainstTarget(input: {
   apiKeyId?: string;
   tag?: string;
   runGroupId?: string | null;
+  safeExecution?: SafeEvalExecution;
 }): Promise<PersistedEvalRun> {
   const suite = getSuite(input.suiteId);
   if (!suite) {
@@ -422,7 +386,15 @@ export async function runEvalSuiteAgainstTarget(input: {
   }
 
   const selectedCases = selectEvalCasesByTag(suite.cases || [], input.tag);
+  if (
+    selectedCases.some(
+      (evalCase) => Array.isArray(evalCase.tags) && evalCase.tags.includes("offline-only")
+    )
+  ) {
+    throw new EvalTargetSafetyError("Offline-only eval suites require externally computed outputs");
+  }
   const normalizedTarget = normalizeEvalTarget(input.target);
+  const safeExecution = input.safeExecution ?? (await resolveSafeEvalExecution(normalizedTarget));
   const targetLabel = getEvalTargetLabel(normalizedTarget);
 
   let resolvedApiKey: string | null = null;
@@ -446,7 +418,8 @@ export async function runEvalSuiteAgainstTarget(input: {
       input.suiteId,
       (evalCase || {}) as Record<string, unknown>,
       normalizedTarget,
-      resolvedApiKey
+      resolvedApiKey,
+      safeExecution
     );
     outputs[evalCase.id] = execution.output;
     telemetryByCase[evalCase.id] = execution.telemetry;
