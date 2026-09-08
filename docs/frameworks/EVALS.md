@@ -141,8 +141,9 @@ curl -X POST http://localhost:20128/api/evals \
 Optional fields:
 
 - `outputs` — `Record<caseId, string>` of pre-computed outputs. When provided,
-  the runner **skips dispatch** and only scores the cached outputs (useful for
-  offline evaluation).
+  the API **skips dispatch**, requires an exact one-to-one match with the selected
+  suite cases, scores the supplied outputs, and persists the run in `eval_runs`
+  (useful for offline evaluation).
 - `compareTarget` — second target to run in parallel; both runs share a
   generated `runGroupId` for head-to-head viewing.
 - `apiKeyId` — internal API key used to authenticate the dispatched
@@ -180,6 +181,10 @@ curl -X POST http://localhost:20128/api/evals/suites \
 4. Captures latency and extracts text from either `choices[0].message.content`
    or the Responses-API `output[]` payload.
 5. Scores all outputs via `runSuite()`, then persists via `saveEvalRun()`.
+
+For pre-computed `outputs`, `POST /api/evals` validates the selected case IDs,
+scores the supplied values without entering the inference runtime, and persists
+the result through the same `saveEvalRun()` storage path.
 
 Cases run **sequentially**. There is no concurrency flag today.
 

@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getEvalScorecard, listEvalRuns, getApiKeys } from "@/lib/localDb";
-import { listSuites, runSuite, createScorecard } from "@/lib/evals/evalRunner";
+import { saveEvalRun } from "@/lib/db/evals";
+import {
+  listSuites,
+  getSuite,
+  selectEvalCasesByTag,
+  evaluateCase,
+  createScorecard,
+} from "@/lib/evals/evalRunner";
 import {
   buildEmpiricalShadowScorecard,
   MIN_EMPIRICAL_EVAL_SAMPLES,
@@ -92,9 +99,99 @@ export async function POST(request: Request) {
 
     const { suiteId, outputs, target, compareTarget, apiKeyId, tag } = validation.data;
 
-    if (outputs && Object.keys(outputs).length > 0) {
-      const result = runSuite(suiteId, outputs, {}, tag);
-      return NextResponse.json(result);
+    if (outputs !== undefined) {
+      // ── Strict persisted external-output ingestion ──────────────────────
+      // 1. Resolve the existing suite (built-in or custom).
+      const suite = getSuite(suiteId);
+      if (!suite) {
+        return NextResponse.json(
+          { error: { message: `Suite not found: ${suiteId}` } },
+          { status: 404 }
+        );
+      }
+
+      // 2. Select cases using the same tag filtering as scoring.
+      let selectedCases: ReturnType<typeof selectEvalCasesByTag>;
+      try {
+        selectedCases = selectEvalCasesByTag(suite.cases || [], tag);
+      } catch (e: unknown) {
+        const msg = sanitizeErrorMessage(e);
+        return NextResponse.json({ error: { message: msg } }, { status: 400 });
+      }
+
+      if (selectedCases.length === 0) {
+        return NextResponse.json(
+          { error: { message: `No eval cases to ingest for suite: ${suiteId}` } },
+          { status: 400 }
+        );
+      }
+
+      // 3. Require exact one-to-one match between output keys and selected case IDs.
+      const selectedIds = new Set(selectedCases.map((c) => c.id));
+      if (selectedIds.size !== selectedCases.length) {
+        return NextResponse.json(
+          { error: { message: "Duplicate case IDs in selected cases" } },
+          { status: 400 }
+        );
+      }
+
+      const outputKeys = Object.keys(outputs);
+      const missing =
+        selectedIds.size > 0
+          ? [...selectedIds].filter((id) => !Object.prototype.hasOwnProperty.call(outputs, id))
+          : [];
+      const extra = outputKeys.filter((id) => !selectedIds.has(id));
+
+      if (missing.length > 0 || extra.length > 0) {
+        const details: string[] = [];
+        if (missing.length > 0) details.push(`missing: ${missing.join(", ")}`);
+        if (extra.length > 0) details.push(`unexpected: ${extra.join(", ")}`);
+        return NextResponse.json(
+          {
+            error: {
+              message: "Output IDs do not match selected cases",
+              details: details.join("; "),
+              missing,
+              unexpected: extra,
+            },
+          },
+          { status: 400 }
+        );
+      }
+
+      // 4. Score the already-validated selectedCases directly — no re-fetch/reselect.
+      const results = selectedCases.map((c) => evaluateCase(c, outputs[c.id] || ""));
+      const passed = results.filter((r) => r.passed).length;
+      const total = results.length;
+      const scored = {
+        suiteId: suite.id,
+        suiteName: suite.name,
+        results,
+        summary: {
+          total,
+          passed,
+          failed: total - passed,
+          passRate: total > 0 ? Math.round((passed / total) * 100) : 0,
+        },
+      };
+
+      // 5. Persist through existing saveEvalRun() — eval_runs is the only storage.
+      const persisted = saveEvalRun({
+        suiteId: scored.suiteId,
+        suiteName: scored.suiteName,
+        target: {
+          type: "suite-default" as const,
+          id: null,
+          label: `External outputs (${selectedCases.length} cases)`,
+        },
+        avgLatencyMs: 0,
+        summary: scored.summary,
+        results: scored.results as Array<Record<string, unknown>>,
+        outputs,
+      });
+
+      // 6. Return every existing scorecard field plus runId.
+      return NextResponse.json({ ...scored, runId: persisted.id });
     }
 
     const targetsToRun = [target || { type: "suite-default" as const, id: null }];
