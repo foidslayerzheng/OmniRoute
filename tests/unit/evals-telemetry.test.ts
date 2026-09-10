@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { collectEvalTelemetry } from "../../src/lib/evals/runtime.ts";
+import {
+  classifyEvalCompletion,
+  collectEvalTelemetry,
+  summarizeEvalQuality,
+} from "../../src/lib/evals/runtime.ts";
 
 const base = {
   suiteId: "universal-v1",
@@ -31,6 +35,7 @@ test("captures routing headers and canonical body usage", () => {
       "X-OmniRoute-Tokens-Out": "999",
     }),
     payload: {
+      choices: [{ message: { content: "valid answer" }, finish_reason: "stop" }],
       usage: {
         prompt_tokens: 10,
         completion_tokens: 4,
@@ -42,7 +47,7 @@ test("captures routing headers and canonical body usage", () => {
   });
 
   assert.deepEqual(telemetry, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     suiteId: "universal-v1",
     caseId: "case-1",
     tags: ["quality", "smoke"],
@@ -53,6 +58,9 @@ test("captures routing headers and canonical body usage", () => {
     requestId: "req-123",
     httpStatus: 200,
     transportSuccess: true,
+    finishReason: "stop",
+    completionStatus: "complete",
+    validForQuality: true,
     latencyMs: 45,
     inputTokens: 10,
     outputTokens: 4,
@@ -138,4 +146,77 @@ test("failed HTTP response uses a bounded machine-readable failure reason", () =
   });
   assert.equal(telemetry.transportSuccess, false);
   assert.equal(telemetry.failureReason, "http_429");
+});
+
+test("classifies HTTP 200 output-limit exhaustion as runtime-invalid", () => {
+  assert.deepEqual(
+    classifyEvalCompletion(
+      {
+        choices: [
+          { message: { content: null, reasoning_content: "unfinished" }, finish_reason: "length" },
+        ],
+      },
+      true
+    ),
+    {
+      finishReason: "length",
+      completionStatus: "output_limit",
+      failureReason: "output_limit_exhausted",
+      validForQuality: false,
+    }
+  );
+});
+
+test("classifies reasoning-only HTTP 200 response without final content", () => {
+  const result = classifyEvalCompletion(
+    {
+      choices: [
+        { message: { content: "", reasoning_content: "reasoning" }, finish_reason: "stop" },
+      ],
+    },
+    true
+  );
+  assert.equal(result.failureReason, "reasoning_only_no_final_content");
+  assert.equal(result.validForQuality, false);
+});
+
+test("classifies empty HTTP 200 final content without reasoning", () => {
+  const result = classifyEvalCompletion(
+    { choices: [{ message: { content: null }, finish_reason: "stop" }] },
+    true
+  );
+  assert.equal(result.failureReason, "empty_final_content");
+  assert.equal(result.validForQuality, false);
+});
+
+test("keeps valid exact-answer completions eligible for quality scoring", () => {
+  const result = classifyEvalCompletion(
+    { choices: [{ message: { content: "EXACT" }, finish_reason: "stop" }] },
+    true
+  );
+  assert.equal(result.failureReason, null);
+  assert.equal(result.validForQuality, true);
+});
+
+test("infers output-limit exhaustion from bounded token usage when finish metadata is absent", () => {
+  const result = classifyEvalCompletion(
+    { choices: [{ message: { content: null } }], usage: { completion_tokens: 512 } },
+    true,
+    false,
+    512
+  );
+  assert.equal(result.completionStatus, "output_limit");
+  assert.equal(result.failureReason, "output_limit_exhausted");
+  assert.equal(result.validForQuality, false);
+});
+
+test("runtime-invalid samples are excluded from quality failures and denominator", () => {
+  assert.deepEqual(summarizeEvalQuality([{ passed: true }, { passed: false }, { passed: null }]), {
+    total: 3,
+    valid: 2,
+    invalid: 1,
+    passed: 1,
+    failed: 1,
+    passRate: 50,
+  });
 });

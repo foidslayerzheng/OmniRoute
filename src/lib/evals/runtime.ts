@@ -24,7 +24,7 @@ export interface EvalTargetOption {
 }
 
 export interface EvalTelemetry {
-  schemaVersion: 1;
+  schemaVersion: 2;
   suiteId: string;
   caseId: string;
   tags: string[];
@@ -35,6 +35,15 @@ export interface EvalTelemetry {
   requestId: string | null;
   httpStatus: number | null;
   transportSuccess: boolean | null;
+  finishReason: string | null;
+  completionStatus:
+    | "complete"
+    | "output_limit"
+    | "reasoning_only"
+    | "empty_final_content"
+    | "http_error"
+    | "unknown";
+  validForQuality: boolean;
   latencyMs: number;
   inputTokens: number | null;
   outputTokens: number | null;
@@ -202,6 +211,120 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+export interface EvalCompletionClassification {
+  finishReason: string | null;
+  completionStatus: EvalTelemetry["completionStatus"];
+  failureReason: string | null;
+  validForQuality: boolean;
+}
+
+function extractFinishReason(payload: Record<string, unknown> | null): string | null {
+  const choices = Array.isArray(payload?.choices) ? payload.choices : [];
+  const firstChoice = choices.length > 0 ? record(choices[0]) : null;
+  const choiceReason =
+    typeof firstChoice?.finish_reason === "string" && firstChoice.finish_reason.trim()
+      ? firstChoice.finish_reason.trim()
+      : null;
+  if (choiceReason) return choiceReason;
+
+  const incompleteDetails = record(payload?.incomplete_details);
+  if (typeof incompleteDetails?.reason === "string" && incompleteDetails.reason.trim()) {
+    return incompleteDetails.reason.trim();
+  }
+
+  return typeof payload?.status === "string" && payload.status.trim()
+    ? payload.status.trim()
+    : null;
+}
+
+function hasReasoningContent(payload: Record<string, unknown> | null): boolean {
+  if (!payload) return false;
+
+  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+  const firstChoice = choices.length > 0 ? record(choices[0]) : null;
+  const message = record(firstChoice?.message);
+  for (const key of ["reasoning_content", "reasoning_text", "reasoning"]) {
+    if (extractTextParts(message?.[key]).length > 0) return true;
+  }
+
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  return output.some((item) => {
+    const outputItem = record(item);
+    return (
+      !!outputItem &&
+      outputItem.type === "reasoning" &&
+      (extractTextParts(outputItem.content).length > 0 ||
+        extractTextParts(outputItem.summary).length > 0)
+    );
+  });
+}
+
+export function classifyEvalCompletion(
+  payload: Record<string, unknown> | null,
+  responseOk: boolean,
+  hasFinalOutput = extractChatOutput(payload).length > 0,
+  maxOutputTokens: number | null = null
+): EvalCompletionClassification {
+  const finishReason = extractFinishReason(payload);
+  if (!responseOk) {
+    return {
+      finishReason,
+      completionStatus: "http_error",
+      failureReason: null,
+      validForQuality: false,
+    };
+  }
+
+  const normalizedReason = finishReason?.toLowerCase() ?? null;
+  const usage = record(payload?.usage);
+  const observedOutputTokens =
+    integerSignal(usage?.completion_tokens) ?? integerSignal(usage?.output_tokens);
+  const outputLimited =
+    normalizedReason === "length" ||
+    normalizedReason === "max_tokens" ||
+    normalizedReason === "max_output_tokens" ||
+    (payload?.status === "incomplete" &&
+      record(payload.incomplete_details)?.reason === "max_output_tokens") ||
+    (!hasFinalOutput &&
+      maxOutputTokens !== null &&
+      observedOutputTokens !== null &&
+      observedOutputTokens >= maxOutputTokens);
+
+  if (outputLimited) {
+    return {
+      finishReason,
+      completionStatus: "output_limit",
+      failureReason: "output_limit_exhausted",
+      validForQuality: false,
+    };
+  }
+
+  if (!hasFinalOutput && hasReasoningContent(payload)) {
+    return {
+      finishReason,
+      completionStatus: "reasoning_only",
+      failureReason: "reasoning_only_no_final_content",
+      validForQuality: false,
+    };
+  }
+
+  if (!hasFinalOutput) {
+    return {
+      finishReason,
+      completionStatus: "empty_final_content",
+      failureReason: "empty_final_content",
+      validForQuality: false,
+    };
+  }
+
+  return {
+    finishReason,
+    completionStatus: normalizedReason ? "complete" : "unknown",
+    failureReason: null,
+    validForQuality: true,
+  };
+}
+
 export function collectEvalTelemetry(input: {
   suiteId: string;
   caseId: string;
@@ -211,6 +334,7 @@ export function collectEvalTelemetry(input: {
   payload: Record<string, unknown> | null;
   durationMs: number;
   zeroCostVerified?: boolean;
+  maxOutputTokens?: number | null;
 }): EvalTelemetry {
   const usage = record(input.payload?.usage);
   const promptDetails = record(usage?.prompt_tokens_details);
@@ -243,9 +367,15 @@ export function collectEvalTelemetry(input: {
   const latencyHeader = finiteNumber(
     optionalHeader(input.response.headers, "X-OmniRoute-Latency-Ms")
   );
+  const completion = classifyEvalCompletion(
+    input.payload,
+    input.response.ok,
+    extractChatOutput(input.payload).length > 0,
+    input.maxOutputTokens ?? null
+  );
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     suiteId: input.suiteId,
     caseId: input.caseId,
     tags: [...input.tags],
@@ -259,6 +389,9 @@ export function collectEvalTelemetry(input: {
     requestId: optionalHeader(input.response.headers, "X-OmniRoute-Request-Id"),
     httpStatus: Number.isInteger(input.response.status) ? input.response.status : null,
     transportSuccess: input.response.ok,
+    finishReason: completion.finishReason,
+    completionStatus: completion.completionStatus,
+    validForQuality: completion.validForQuality,
     latencyMs: latencyHeader ?? Math.max(0, Math.round(input.durationMs)),
     inputTokens: bodyUsageAvailable
       ? (integerSignal(usage?.prompt_tokens) ?? integerSignal(usage?.input_tokens))
@@ -277,7 +410,7 @@ export function collectEvalTelemetry(input: {
       optionalHeader(input.response.headers, "X-OmniRoute-Fallback-Attempts")
     ),
     retryCount: null,
-    failureReason: input.response.ok ? null : `http_${input.response.status}`,
+    failureReason: input.response.ok ? completion.failureReason : "http_" + input.response.status,
     cacheStatus: optionalHeader(input.response.headers, "X-OmniRoute-Cache"),
     cacheHit,
     costUsd,
@@ -307,6 +440,10 @@ async function executeEvalCase(
     headers.set("Authorization", `Bearer ${apiKey}`);
   }
 
+  const maxOutputTokens =
+    typeof input.max_tokens === "number" && Number.isFinite(input.max_tokens)
+      ? input.max_tokens
+      : 512;
   const request = new Request("http://localhost/api/v1/chat/completions", {
     method: "POST",
     headers,
@@ -314,10 +451,7 @@ async function executeEvalCase(
       ...input,
       model,
       stream: false,
-      max_tokens:
-        typeof input.max_tokens === "number" && Number.isFinite(input.max_tokens)
-          ? input.max_tokens
-          : 512,
+      max_tokens: maxOutputTokens,
     }),
   });
 
@@ -343,6 +477,7 @@ async function executeEvalCase(
     payload,
     durationMs,
     zeroCostVerified: safeExecution.zeroCostVerified,
+    maxOutputTokens,
   });
 
   if (!response.ok) {
@@ -356,9 +491,11 @@ async function executeEvalCase(
   }
 
   const output = extractChatOutput(payload);
+  const runtimeFailure = telemetry.validForQuality ? null : telemetry.failureReason;
   return {
     output: output || "[No content returned]",
     durationMs,
+    ...(runtimeFailure ? { error: runtimeFailure } : {}),
     telemetry,
   };
 }
@@ -370,6 +507,26 @@ function getAverageLatency(caseMetrics: Record<string, { durationMs?: number }>)
 
   if (durations.length === 0) return 0;
   return Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length);
+}
+
+export function summarizeEvalQuality(results: Array<{ passed: boolean | null }>): {
+  total: number;
+  valid: number;
+  invalid: number;
+  passed: number;
+  failed: number;
+  passRate: number;
+} {
+  const validResults = results.filter((result) => result.passed !== null);
+  const passed = validResults.filter((result) => result.passed === true).length;
+  return {
+    total: results.length,
+    valid: validResults.length,
+    invalid: results.length - validResults.length,
+    passed,
+    failed: validResults.length - passed,
+    passRate: validResults.length > 0 ? Math.round((passed / validResults.length) * 100) : 0,
+  };
 }
 
 export async function runEvalSuiteAgainstTarget(input: {
@@ -430,10 +587,26 @@ export async function runEvalSuiteAgainstTarget(input: {
   }
 
   const evaluated = runSuite(input.suiteId, outputs, caseMetrics, input.tag);
-  const results = evaluated.results.map((result) => ({
-    ...result,
-    telemetry: telemetryByCase[result.caseId],
-  }));
+  const results = evaluated.results.map((result) => {
+    const telemetry = telemetryByCase[result.caseId];
+    const validForQuality = telemetry?.validForQuality !== false;
+    return {
+      ...result,
+      passed: validForQuality ? result.passed : null,
+      ...(validForQuality ? {} : { qualityStatus: "invalid_runtime" }),
+      telemetry,
+    };
+  });
+  const validResults = results.filter((result) => result.passed !== null);
+  const passed = validResults.filter((result) => result.passed === true).length;
+  const summary = {
+    total: results.length,
+    valid: validResults.length,
+    invalid: results.length - validResults.length,
+    passed,
+    failed: validResults.length - passed,
+    passRate: validResults.length > 0 ? Math.round((passed / validResults.length) * 100) : 0,
+  };
   return saveEvalRun({
     runGroupId: input.runGroupId || null,
     suiteId: evaluated.suiteId,
@@ -445,7 +618,7 @@ export async function runEvalSuiteAgainstTarget(input: {
     },
     apiKeyId: input.apiKeyId || null,
     avgLatencyMs: getAverageLatency(caseMetrics),
-    summary: evaluated.summary,
+    summary,
     results: results as Array<Record<string, unknown>>,
     outputs,
   });
