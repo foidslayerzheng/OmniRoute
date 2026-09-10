@@ -111,7 +111,7 @@ test("#3578 every MCP-server source file is covered by package.json files", () =
 // `!**/*.test.*` negations in package.json `files`.
 function packedFilePaths(): string[] {
   // --dry-run writes no tarball; --json emits [{ files: [{ path }] }] on stdout.
-  const out = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+  const out = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
     cwd: ROOT,
     encoding: "utf8",
     maxBuffer: 32 * 1024 * 1024,

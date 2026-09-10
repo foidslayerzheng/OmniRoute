@@ -217,10 +217,10 @@ promote or demote routing candidates.
 - The Host Operator success-classifier implementation was inspected previously:
   structured `{ "ok": true }` takes precedence over generic error-text
   heuristics, while actual failure results still hard-stop.
-- Focused Hermes classifier tests are `TEST_BLOCKED_MISSING_PYTEST`: the
+- Focused Hermes classifier tests are blocked because pytest is unavailable: the
   configured Hermes virtualenv reports `No module named pytest`. No package was
   installed.
-- Hindsight HTTP 401 is `APPROVAL_GATE`: source inspection identifies the retain
+- Hindsight HTTP 401 remains blocked on authentication approval: source inspection identifies the retain
   path but cannot establish or replace the required authentication material
   without credential/account remediation.
 - Host Operator schema/runtime audit found the bounded free-batch actions and
