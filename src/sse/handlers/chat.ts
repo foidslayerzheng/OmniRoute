@@ -101,6 +101,7 @@ import { getCircuitBreaker, isLocalStreamLifecycleError } from "../../shared/uti
 import { markAccountExhaustedFrom429 } from "../../domain/quotaCache";
 import { RequestTelemetry, recordTelemetry } from "../../shared/utils/requestTelemetry";
 import { generateRequestId } from "../../shared/utils/requestId";
+import { resolveCallLogCorrelationId } from "../../shared/taskContract";
 import { logAuditEvent } from "../../lib/compliance/index";
 import { enforceApiKeyPolicy } from "../../shared/utils/apiKeyPolicy";
 import { hasProviderQuotaBypassScope } from "../../shared/constants/apiKeyPolicyScopes";
@@ -247,6 +248,7 @@ export async function handleChat(
 
   // Pipeline: Start request telemetry
   const reqId = correlationId || generateRequestId();
+  const callLogCorrelationId = resolveCallLogCorrelationId(request.headers, reqId);
   const telemetry = new RequestTelemetry(reqId);
 
   const backpressure = checkConnectionCapacity();
@@ -819,7 +821,7 @@ export async function handleChat(
             ),
             cachedSettings: settings,
             providerId: target?.providerId ?? null,
-            correlationId: reqId,
+            correlationId: callLogCorrelationId,
             modelPinned: (target as any)?.modelPinned ?? false,
             reasoningDecision,
             reasoningIntent,
@@ -855,7 +857,7 @@ export async function handleChat(
       apiKeyAllowedConnections: apiKeyInfo?.allowedConnections ?? null,
       relayOptions,
       signal: request?.signal ?? null,
-      correlationId: reqId,
+      correlationId: callLogCorrelationId,
     });
 
     // ── Global Fallback Provider (#689) ────────────────────────────────────
@@ -923,7 +925,7 @@ export async function handleChat(
           comboName: combo.name,
           apiKeyId: apiKeyInfo?.id ?? null,
           apiKeyName: apiKeyInfo?.name ?? null,
-          correlationId: reqId,
+          correlationId: callLogCorrelationId,
           startTime: telemetry?.startTime,
           requestBody: clientRawRequest?.body ?? null,
         });
@@ -963,7 +965,7 @@ export async function handleChat(
       forceLiveComboTest: isComboLiveTest,
       forcedConnectionId: requestedConnectionId,
       allowedConnectionIds: evalConnectionLock ? [evalConnectionLock] : null,
-      correlationId: reqId,
+      correlationId: callLogCorrelationId,
       routingComboId,
       reasoningDecision,
       reasoningIntent,
