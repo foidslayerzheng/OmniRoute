@@ -658,6 +658,14 @@ jobs:
       # cannot provide (3 releases shipped boot-crashing tarballs with green lists).
       - name: Boot-smoke the packed tarball
         run: npm run check:pack-boot
+      - name: Pack Stage 3 deployment tarball
+        run: npm pack --pack-destination .
+      - name: Upload Stage 3 npm tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: stage3-omniroute-3.8.49-npm-tarball
+          path: omniroute-3.8.49.tgz
+          if-no-files-found: error
 
   electron-package-smoke:
     name: Electron Package Smoke (${{ matrix.os }})
