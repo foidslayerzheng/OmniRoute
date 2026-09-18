@@ -10,6 +10,7 @@ const {
   buildOpenAIResponse,
   buildRequest,
   combosDb,
+  callLogsDb,
   handleChat,
   resetStorage,
   seedApiKey,
@@ -321,24 +322,51 @@ test("handleChat keeps the combo error when the global fallback throws", async (
   assert.match(json.error.message, /primary combo failed/i);
 });
 
-test("handleChat returns 404 when no provider credentials exist", async () => {
-  // Upstream port decolua/9router#336 (Ibrahim Ryan): the no-credentials branch
-  // of handleNoCredentials now surfaces 404 NOT_FOUND so combo routing can fall
-  // through to the next target instead of being killed by the combo 400-hard-stop
-  // guard (open-sse/services/combo.ts, PR #4316 / issue #4279).
-  const response = await handleChat(
-    buildRequest({
-      body: {
-        model: "openai/gpt-4.1",
-        stream: false,
-        messages: [{ role: "user", content: "Hello" }],
-      },
-    })
-  );
-  const json = (await response.json()) as any;
+test("handleChat persists Hermes correlation for a no-credentials 404 without provider dispatch", async () => {
+  // A zero-credential provider rejects before the executor. The rejected request
+  // still needs the same task identity in call_logs as normal model calls.
+  const correlationId = "session-123:turn-no-credentials";
+  const originalFetch = globalThis.fetch;
+  const originalExecute = BaseExecutor.prototype.execute;
+  let providerDispatchCalls = 0;
+  globalThis.fetch = async () => {
+    providerDispatchCalls += 1;
+    throw new Error("No provider request should be sent");
+  };
+  BaseExecutor.prototype.execute = async () => {
+    providerDispatchCalls += 1;
+    throw new Error("No provider executor should run");
+  };
 
-  assert.equal(response.status, 404);
-  assert.match(json.error.message, /No active credentials for provider: openai/);
+  try {
+    const response = await handleChat(
+      buildRequest({
+        headers: {
+          "x-omniroute-contract-version": "1",
+          "x-omniroute-mission-id": "session-123",
+          "x-omniroute-task-id": correlationId,
+          "x-omniroute-correlation-id": correlationId,
+        },
+        body: {
+          model: "openai/gpt-4.1",
+          stream: false,
+          messages: [{ role: "user", content: "Hello" }],
+        },
+      })
+    );
+    const json = (await response.json()) as any;
+
+    assert.equal(response.status, 404);
+    assert.match(json.error.message, /No active credentials for provider: openai/);
+    assert.equal(providerDispatchCalls, 0);
+    const logs = await callLogsDb.getCallLogs({ correlationId });
+    assert.equal(logs.length, 1, "rejection must be logged before the response resolves");
+    assert.equal(logs[0].correlationId, correlationId);
+    assert.equal(logs[0].status, 404);
+  } finally {
+    globalThis.fetch = originalFetch;
+    BaseExecutor.prototype.execute = originalExecute;
+  }
 });
 
 test("handleChat returns 503 for cooled-down connections and 503 for open circuit breakers", async () => {
