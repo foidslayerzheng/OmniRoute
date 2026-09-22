@@ -1339,6 +1339,33 @@ async function handleSingleModelChat(
           excludedConnectionIds.size > 0
             ? Array.from(excludedConnectionIds)[excludedConnectionIds.size - 1]
             : null;
+        // A first-attempt credential miss has no executor to write a call log.
+        // Persist its task identity before returning the existing 404.
+        if (
+          !comboName &&
+          !credentials?.allRateLimited &&
+          !credentials?.allExpired &&
+          !(lastError && lastStatus) &&
+          excludedConnectionIds.size === 0
+        ) {
+          try {
+            const { saveCallLog } = await import("@/lib/usageDb");
+            await saveCallLog({
+              method: "POST",
+              path: clientRawRequest?.endpoint || "/v1/chat/completions",
+              status: noCredsRes.status,
+              model,
+              requestedModel: body?.model || modelStr,
+              provider,
+              connectionId: null,
+              tokens: {},
+              error: `No active credentials for provider: ${provider}`,
+              apiKeyId: apiKeyInfo?.id ?? null,
+              apiKeyName: apiKeyInfo?.name ?? null,
+              correlationId: runtimeOptions?.correlationId ?? null,
+            });
+          } catch {}
+        }
         return withSelectedConnectionHeader(noCredsRes, lastFailedConnectionId);
       }
 

@@ -605,7 +605,7 @@ jobs:
       # the Turbopack artifact end-to-end.
       - run: npm run build
         env:
-          OMNIROUTE_USE_TURBOPACK: "1"
+          OMNIROUTE_USE_TURBOPACK: "0"
       - name: Archive Next.js build for downstream jobs
         # Use tar so the archive preserves paths relative to CWD (.build/next/...).
         # upload-artifact path-stripping is ambiguous when exclude patterns are used;
@@ -658,6 +658,14 @@ jobs:
       # cannot provide (3 releases shipped boot-crashing tarballs with green lists).
       - name: Boot-smoke the packed tarball
         run: npm run check:pack-boot
+      - name: Pack Stage 3 deployment tarball
+        run: npm pack --pack-destination .
+      - name: Upload Stage 3 npm tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: stage3-omniroute-3.8.49-npm-tarball
+          path: omniroute-3.8.49.tgz
+          if-no-files-found: error
 
   electron-package-smoke:
     name: Electron Package Smoke (${{ matrix.os }})
