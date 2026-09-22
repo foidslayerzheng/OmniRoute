@@ -247,6 +247,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@monaco-editor/react": "^4.7.0",
     "@ngrok/ngrok": "^1.7.0",
+    "@receptron/laya": "0.1.2",
     "@swc/helpers": "0.5.23",
     "@toon-format/toon": "^4.1.0",
     "@types/mdx": "^2.0.13",
