@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { FakeJevAdapter, NullJevAdapter } from "../../scripts/supervisor/routing/jevAdapter.mjs";
+import { FakeLayaAdapter, NullLayaAdapter } from "../../scripts/supervisor/routing/layaAdapter.mjs";
 import { RoutingObservationStore } from "../../scripts/supervisor/routing/observationStore.mjs";
 import { ResourceLockManager } from "../../scripts/supervisor/resourceLocks.mjs";
 import { SupervisorScheduler } from "../../scripts/supervisor/scheduler.mjs";
@@ -83,7 +83,7 @@ test("opt-in empirical routing selects an executor and persists route audit and 
   const execution = await run({
     enabled: true,
     store,
-    jev: new FakeJevAdapter({ rankExecutors: { selected: ["codex"], confidence: 0.9 } }),
+    laya: new FakeLayaAdapter({ rankExecutors: { selected: ["codex"], confidence: 0.9 } }),
     candidates: [
       {
         executor: "local",
@@ -115,14 +115,14 @@ test("opt-in empirical routing selects an executor and persists route audit and 
   assert.equal((await store.list()).length, 6);
 });
 
-test("routing omitted preserves the legacy adapter path and null Jev does not block", async () => {
+test("routing omitted preserves the legacy adapter path and null Laya does not block", async () => {
   const legacy = await run(null);
   assert.deepEqual(legacy.selected, ["legacy"]);
   const root = await mkdtemp(path.join(os.tmpdir(), "routing-null-"));
   const routed = await run({
     enabled: true,
     store: new RoutingObservationStore(root),
-    jev: new NullJevAdapter(),
+    laya: new NullLayaAdapter(),
     candidates: [
       {
         executor: "local",
@@ -167,7 +167,7 @@ test("scheduler persists and advances deterministic bounded exploration cadence"
     routing: {
       enabled: true,
       store,
-      jev: new NullJevAdapter(),
+      laya: new NullLayaAdapter(),
       candidates: [
         {
           executor: "local",

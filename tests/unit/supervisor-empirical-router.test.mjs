@@ -79,34 +79,34 @@ test("insufficient data uses conservative fallback and unavailable candidates ar
   assert.equal(unavailable.selected.executor, "codex");
 });
 
-test("acceptance reliability outranks cost and Jev cannot overrule empirical evidence", () => {
+test("acceptance reliability outranks cost and Laya cannot overrule empirical evidence", () => {
   const result = routeTask(
     input({
       statistics: [stat("local", 20, 12), stat("codex", 20, 20)],
-      jev: { selected: ["local"], confidence: 1, fallback: false },
+      laya: { selected: ["local"], confidence: 1, fallback: false },
     })
   );
   assert.equal(result.selected.executor, "codex");
-  assert.equal(result.explanation.JEV_USED, "YES");
+  assert.equal(result.explanation.LAYA_USED, "YES");
 });
 
-test("Jev agreement is recorded but policy remains authoritative", () => {
+test("Laya agreement is recorded but policy remains authoritative", () => {
   const agreed = routeTask(
     input({
-      jev: {
+      laya: {
         selected: ["local"],
         confidence: 0.9,
         fallback: false,
-        model: "jev-latest",
+        model: "local-laya",
         latency_ms: 12,
       },
     })
   );
   assert.equal(agreed.selected.executor, "local");
-  assert.equal(agreed.explanation.JEV_RECOMMENDATION, "local");
-  assert.equal(agreed.explanation.JEV_MODEL, "jev-latest");
-  assert.equal(agreed.explanation.JEV_LATENCY_MS, 12);
-  assert.equal(agreed.explanation.JEV_CONFIDENCE, 0.9);
+  assert.equal(agreed.explanation.LAYA_RECOMMENDATION, "local");
+  assert.equal(agreed.explanation.LAYA_MODEL, "local-laya");
+  assert.equal(agreed.explanation.LAYA_LATENCY_MS, 12);
+  assert.equal(agreed.explanation.LAYA_CONFIDENCE, 0.9);
   assert.equal(agreed.explanation.EMPIRICAL_SELECTION, "local");
   assert.equal(agreed.explanation.FINAL_SELECTION, "local");
   assert.throws(() => routeTask(input({ permission_decision: "FORBIDDEN" })), /forbidden/i);

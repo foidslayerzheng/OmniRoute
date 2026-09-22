@@ -26,7 +26,7 @@ function boundedRatio(numerator, denominator) {
   return Math.max(0, Math.min(1, numerator / denominator));
 }
 
-function scoreCandidate(stat, candidate, minimumSamples, jevPreferred) {
+function scoreCandidate(stat, candidate, minimumSamples, layaPreferred) {
   const samples = stat?.samples ?? 0;
   const successReliability = stat?.smoothed_success ?? 0.5;
   const verifierReliability = stat?.smoothed_verified ?? successReliability;
@@ -83,7 +83,7 @@ function scoreCandidate(stat, candidate, minimumSamples, jevPreferred) {
     latency_penalty: latencyPenalty,
     cost: -costPenalty,
     cost_penalty: costPenalty,
-    jev: jevPreferred ? 1 : 0,
+    laya: layaPreferred ? 1 : 0,
     preference_score: reliability * 100 - retryPenalty - latencyPenalty - costPenalty,
   };
 }
@@ -97,7 +97,7 @@ function compare(left, right) {
     "retry",
     "latency",
     "cost",
-    "jev",
+    "laya",
   ]) {
     if (left.score[key] !== right.score[key]) return right.score[key] - left.score[key];
   }
@@ -114,9 +114,11 @@ export function routeTask(input) {
     eligible(candidate, input.required_tools ?? [], input.required_context_ids ?? [])
   );
   if (!available.length) throw new Error("No eligible executor candidates");
-  const jevSelected = new Set(
-    input.jev && !input.jev.fallback && (input.jev.confidence ?? 0) >= (input.jev_threshold ?? 0.6)
-      ? (input.jev.selected ?? [])
+  const layaSelected = new Set(
+    input.laya &&
+      !input.laya.fallback &&
+      (input.laya.confidence ?? 0) >= (input.laya_threshold ?? 0.6)
+      ? (input.laya.selected ?? [])
       : []
   );
   const scored = available.map((candidate) => {
@@ -131,7 +133,7 @@ export function routeTask(input) {
       candidate,
       stat,
       samples,
-      score: scoreCandidate(stat, candidate, minimumSamples, jevSelected.has(candidate.executor)),
+      score: scoreCandidate(stat, candidate, minimumSamples, layaSelected.has(candidate.executor)),
     };
   });
   const ranked = [...scored].sort(compare);
@@ -189,13 +191,13 @@ export function routeTask(input) {
     explanation: {
       ROUTE_TASK_TYPE: input.task_type,
       ROUTE_CANDIDATES: available.map((item) => item.executor),
-      JEV_USED: jevSelected.size ? "YES" : "NO",
-      JEV_MODEL: input.jev?.model ?? null,
-      JEV_LATENCY_MS: input.jev?.latency_ms ?? null,
-      JEV_DECISION: [...jevSelected],
-      JEV_CONFIDENCE: input.jev?.confidence ?? null,
-      JEV_FALLBACK: input.jev?.fallback ?? true,
-      JEV_RECOMMENDATION: [...jevSelected].join(",") || null,
+      LAYA_USED: layaSelected.size ? "YES" : "NO",
+      LAYA_MODEL: input.laya?.model ?? null,
+      LAYA_LATENCY_MS: input.laya?.latency_ms ?? null,
+      LAYA_DECISION: [...layaSelected],
+      LAYA_CONFIDENCE: input.laya?.confidence ?? null,
+      LAYA_FALLBACK: input.laya?.fallback ?? true,
+      LAYA_RECOMMENDATION: [...layaSelected].join(",") || null,
       EMPIRICAL_SELECTION: empiricalSelection,
       FINAL_SELECTION: selectedEntry.candidate.executor,
       SELECTED_EXECUTOR: selectedEntry.candidate.executor,

@@ -13,7 +13,7 @@ test("three-mode routing benchmark reports all representative task classes and m
     "verifier-heavy",
     "failure-retry",
   ]);
-  for (const mode of ["baseline", "empirical", "empirical_jev"]) {
+  for (const mode of ["baseline", "empirical", "empirical_laya"]) {
     assert.equal(report[mode].tasks, 6);
     assert.ok(report[mode].completion_rate >= 0 && report[mode].completion_rate <= 1);
     assert.ok(report[mode].verifier_pass_rate >= 0 && report[mode].verifier_pass_rate <= 1);

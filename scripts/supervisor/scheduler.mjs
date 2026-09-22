@@ -220,7 +220,7 @@ export class SupervisorScheduler {
   async prepareRoute(state, lane) {
     if (!this.routing?.enabled || lane.route_decision) return;
     const statistics = await this.routing.store.stats();
-    const jev = await this.routing.jev.rankExecutors({
+    const laya = await this.routing.laya.rankExecutors({
       task_type: lane.task_type,
       description: lane.description,
       candidates: this.routing.candidates.map((item) => item.executor),
@@ -231,7 +231,7 @@ export class SupervisorScheduler {
       task_type: lane.task_type,
       candidates: this.routing.candidates,
       statistics,
-      jev,
+      laya,
       permission_decision: "AUTO_CONTINUE",
       conservative_fallback: this.routing.conservative_fallback,
       required_tools: lane.required_tools,

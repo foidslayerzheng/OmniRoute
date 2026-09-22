@@ -14,8 +14,7 @@ import { ResourceLockManager } from "./resourceLocks.mjs";
 import { SupervisorScheduler } from "./scheduler.mjs";
 import { EvidenceCache } from "./evidenceCache.mjs";
 import { VerifierHarness } from "./verifiers/index.mjs";
-import { CommandJevAdapter, FakeJevAdapter, NullJevAdapter } from "./routing/jevAdapter.mjs";
-import { TypeSafeJevAdapter } from "./routing/typesafeJevAdapter.mjs";
+import { FakeLayaAdapter, LocalLayaAdapter, NullLayaAdapter } from "./routing/layaAdapter.mjs";
 import { RoutingObservationStore } from "./routing/observationStore.mjs";
 
 function parseArgs(argv) {
@@ -96,31 +95,24 @@ function dagScheduler(stateRoot, mission, adapterFactory, maxConcurrency) {
 async function routingFrom(options, stateRoot) {
   if (!options.routing_config) return null;
   const config = JSON.parse(await readFile(options.routing_config, "utf8"));
-  let jev;
-  if (!config.jev || config.jev.mode === "null") jev = new NullJevAdapter();
-  else if (config.jev.mode === "fake") jev = new FakeJevAdapter(config.jev.responses ?? {});
-  else if (config.jev.mode === "command") {
-    jev = new CommandJevAdapter({
-      executable: config.jev.executable,
-      args: config.jev.args ?? [],
-      timeoutMs: config.jev.timeout_ms ?? 250,
+  let laya;
+  if (!config.laya || config.laya.mode === "null") laya = new NullLayaAdapter();
+  else if (config.laya.mode === "fake") {
+    laya = new FakeLayaAdapter(config.laya.responses ?? {}, {
+      confidenceThreshold: config.laya.confidence_threshold ?? 0.6,
     });
-  } else if (config.jev.mode === "typesafe") {
-    jev = new TypeSafeJevAdapter({
-      enabled: config.jev.enabled === true,
-      apiKey: process.env.TYPESAFE_API_KEY,
-      timeoutMs: config.jev.timeout_ms ?? 1_500,
-      maxRequestBytes: config.jev.max_request_bytes ?? 32_768,
-      maxResponseBytes: config.jev.max_response_bytes ?? 32_768,
-      confidenceThreshold: config.jev.confidence_threshold ?? 0.6,
-      maxCalls: config.jev.max_calls_per_mission ?? 0,
-      spendCeiling: config.jev.spend_ceiling ?? 0,
+  } else if (config.laya.mode === "local") {
+    laya = new LocalLayaAdapter({
+      enabled: config.laya.enabled === true,
+      modelDir: config.laya.model_dir,
+      timeoutMs: config.laya.timeout_ms ?? 1_500,
+      confidenceThreshold: config.laya.confidence_threshold ?? 0.6,
     });
-  } else throw new Error("Jev mode must be null, fake, command, or typesafe");
+  } else throw new Error("Laya mode must be null, fake, or local");
   return {
     enabled: true,
     store: new RoutingObservationStore(stateRoot),
-    jev,
+    laya,
     candidates: config.candidates,
     conservative_fallback: config.conservative_fallback,
     minimum_samples: config.minimum_samples ?? 5,

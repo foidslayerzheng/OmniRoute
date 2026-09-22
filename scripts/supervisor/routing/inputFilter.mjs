@@ -16,12 +16,12 @@ export async function filterRoutingInputs(input) {
     ...tools.filter((item) => item.required).map((item) => item.id),
   ]);
   const [contextDecision, toolDecision] = await Promise.all([
-    input.jev.selectContext({
+    input.laya.selectContext({
       task_description: input.task_description,
       available: contexts.map(({ id }) => id),
       required: [...requiredContext],
     }),
-    input.jev.selectTools({
+    input.laya.selectTools({
       task_description: input.task_description,
       available: tools.map(({ id }) => id),
       required: [...requiredTools],
@@ -38,7 +38,7 @@ export async function filterRoutingInputs(input) {
   return {
     context: selectedContext,
     tools: selectedTools,
-    jev: { context: contextDecision, tools: toolDecision },
+    laya: { context: contextDecision, tools: toolDecision },
     metrics: {
       original_context_bytes: originalBytes,
       selected_context_bytes: selectedBytes,

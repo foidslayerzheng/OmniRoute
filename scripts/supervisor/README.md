@@ -73,14 +73,13 @@ currently eligible executor descriptors, an explicit conservative fallback, the 
 threshold (default `5`), and exploration interval. Observations are appended beneath
 `<state-root>/empirical-routing/`; production OmniRoute databases are never written.
 
-Jev modes are `null`, `fake`, `command`, and `typesafe`. `null` is the safe default. `command`
-requires an explicit executable and never discovers or activates Hermes plugins. The TypeSafe
-transport remains off unless its config sets `mode` to `typesafe` and `enabled` to `true`; it
-reads only `TYPESAFE_API_KEY` and also requires positive `max_calls_per_mission` and
-`spend_ceiling` values. Its bounded HTTPS requests use `jev-latest` at the fixed System One
-endpoint. Jev failures, timeouts, malformed output, exhausted usage guards, and low confidence
-fall back to empirical routing. Jev cannot approve work, bypass locks or acceptance, change
-attempt limits, or mark tasks complete.
+Laya modes are `null`, `fake`, and `local`; `null` is the safe default. The local adapter remains
+off unless its config sets `mode` to `local`, `enabled` to `true`, and `model_dir` to an existing
+local ONNX bundle. It dynamically loads the optional `@receptron/laya` Node runtime only after
+those checks, so this integration does not fetch model weights. Laya failures, timeouts,
+malformed output, and low confidence fall back to empirical routing. Laya is advisory: it cannot
+approve work, bypass capability filters, locks or acceptance, change attempt limits, override
+strong empirical evidence, or mark tasks complete.
 
 No adapter is selected implicitly. Write locks for service, database, and deployment resources
 remain approval-gated. Resource locks and `dag-state.json` are persisted beneath the configured

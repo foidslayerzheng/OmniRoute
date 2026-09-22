@@ -86,7 +86,7 @@ function outcome(executor, taskType, context) {
 export async function runRoutingBenchmark() {
   const baseline = TASKS.map((taskType) => outcome("codex", taskType, 8_000));
   const empirical = [];
-  const empiricalJev = [];
+  const empiricalLaya = [];
   const empiricalStarted = performance.now();
   for (const taskType of TASKS) {
     const base = {
@@ -121,7 +121,7 @@ export async function runRoutingBenchmark() {
     empirical.push(outcome(routeTask(base).selected.executor, taskType, 8_000));
   }
   const empiricalOverhead = performance.now() - empiricalStarted;
-  const jevStarted = performance.now();
+  const layaStarted = performance.now();
   for (const taskType of TASKS) {
     const selected = routeTask({
       task_type: taskType,
@@ -151,16 +151,16 @@ export async function runRoutingBenchmark() {
       minimum_samples: 5,
       exploration_interval: 0,
       exploration_sequence: 1,
-      jev: { selected: ["local"], confidence: 0.9, fallback: false },
+      laya: { selected: ["local"], confidence: 0.9, fallback: false },
     }).selected.executor;
-    empiricalJev.push(outcome(selected, taskType, 5_000));
+    empiricalLaya.push(outcome(selected, taskType, 5_000));
   }
-  const jevOverhead = performance.now() - jevStarted;
+  const layaOverhead = performance.now() - layaStarted;
   return {
     task_classes: TASKS,
     baseline: summarize(baseline, 0),
     empirical: summarize(empirical, empiricalOverhead),
-    empirical_jev: summarize(empiricalJev, jevOverhead),
+    empirical_laya: summarize(empiricalLaya, layaOverhead),
   };
 }
 
