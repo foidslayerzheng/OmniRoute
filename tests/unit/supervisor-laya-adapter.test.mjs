@@ -187,7 +187,7 @@ test("unavailable Laya preserves the full policy-allowed input set", async () =>
   );
 });
 
-test("Supervisor has no hosted advisory secret path or bundled Laya model dependency", async () => {
+test("Supervisor has no hosted advisory secret path and pins the optional Laya runtime", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const inspected = await Promise.all(
     [
@@ -200,7 +200,10 @@ test("Supervisor has no hosted advisory secret path or bundled Laya model depend
   const retiredSecret = ["TYPE", "SAFE_API_KEY"].join("");
   const retiredAdapter = ["type", "safe", "J", "evAdapter.mjs"].join("");
   assert.equal(inspected.join("\n").includes(retiredSecret), false);
-  assert.doesNotMatch(await readFile(path.join(root, "package.json"), "utf8"), /@receptron\/laya/);
+  const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  assert.equal(packageJson.dependencies["@receptron/laya"], "0.1.2");
+  const { Laya } = await import("@receptron/laya");
+  assert.equal(typeof Laya.load, "function");
   await assert.rejects(
     () => access(path.join(root, "scripts/supervisor/routing", retiredAdapter)),
     { code: "ENOENT" }
