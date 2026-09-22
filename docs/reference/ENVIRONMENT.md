@@ -381,6 +381,16 @@ Controls how OmniRoute discovers and launches CLI sidecars (Claude Code, Codex, 
 | `CLI_AUGGIE_BIN`          | `auggie`    | `open-sse/executors/auggie.ts`                      | Alias override for the Augment (Auggie) CLI binary path (checked after `AUGGIE_BIN`).                                                                                          |
 | `HERMES_HOME`             | `~/.hermes` | `src/lib/cli-helper/config-generator/hermesHome.ts` | Hermes Agent home directory where OmniRoute reads/writes the Hermes CLI config. Matches the env var the Hermes PowerShell installer sets on Windows (`%LOCALAPPDATA%\hermes`). |
 
+### Supervisor V2 local execution
+
+These variables apply only when the Supervisor CLI is invoked explicitly. They do not enable
+Supervisor, Hermes, Laya, or production execution.
+
+| Variable                     | Default | Source File                  | Description                                                        |
+| ---------------------------- | ------- | ---------------------------- | ------------------------------------------------------------------ |
+| `LOCAL_ENDPOINT_CAPACITY`    | `1`     | `scripts/supervisor/cli.mjs` | Maximum concurrent tasks admitted to one local inference endpoint. |
+| `SUPERVISOR_MAX_CONCURRENCY` | `3`     | `scripts/supervisor/cli.mjs` | Maximum parallel lanes admitted by the Supervisor DAG scheduler.   |
+
 ### CLI Profile Auto-Sync
 
 These feature flags are opt-in and default off. They can also be toggled from
