@@ -15,6 +15,7 @@
     "@ngrok/ngrok",
     "@opencode-ai/plugin",
     "@playwright/test",
+    "@receptron/laya",
     "@size-limit/file",
     "@stryker-mutator/core",
     "@stryker-mutator/tap-runner",
